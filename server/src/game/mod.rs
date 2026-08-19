@@ -1,0 +1,1471 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
+
+use tokio::sync::mpsc;
+
+use crate::config::{load_map_spawns, MapSpawns, ServerConfig};
+use crate::map::{perform_collision_xy, MapGrid};
+use crate::net::ids;
+use crate::net::packet;
+
+mod bot_roster;
+mod bots;
+mod ctf;
+mod projectile;
+mod shoot;
+mod snd;
+
+pub use bots::{
+    bot_scenario_summary, configure_bot_scenario, reconcile_bot_roster, spawn_initial_bots,
+    tick_bots, BotBrain,
+};
+pub use ctf::{send_flag_enum_to, CtfState, GAME_TYPE_CTF};
+
+pub const MAX_PLAYER: usize = 32;
+pub const TICK_MS: u64 = 20;
+
+pub const PLAYER_STATUS_ALIVE: i8 = 0;
+pub const PLAYER_STATUS_DEAD: i8 = 1;
+pub const PLAYER_STATUS_LOADING: i8 = 2;
+
+pub const PLAYER_TEAM_SPECTATOR: i8 = -1;
+pub const PLAYER_TEAM_BLUE: i8 = 0;
+pub const PLAYER_TEAM_RED: i8 = 1;
+/** Chat addressed to every team (ServerRecv.cpp:562). */
+pub const CHAT_TEAM_ALL: i8 = -2;
+
+fn wire_player_slot(payload: &[u8]) -> Option<usize> {
+    let slot = *payload.first()? as usize;
+    (slot < MAX_PLAYER).then_some(slot)
+}
+
+fn is_advertised_map(map_list: &[String], name: &str) -> bool {
+    map_list.iter().any(|advertised| advertised == name)
+}
+
+fn valid_player_team(team: i8) -> bool {
+    matches!(
+        team,
+        PLAYER_TEAM_SPECTATOR | PLAYER_TEAM_BLUE | PLAYER_TEAM_RED
+    )
+}
+
+/// GameVar.cpp sv_timeToSpawn — seconds before dead players may spawn.
+pub const SV_TIME_TO_SPAWN: f32 = 5.0;
+pub const SPAWN_IMMUNITY_TIME: f32 = 2.0;
+pub const GAME_PLAYING: i8 = -1;
+pub const GAME_BLUE_WIN: i8 = 0;
+pub const GAME_RED_WIN: i8 = 1;
+pub const GAME_DRAW: i8 = 2;
+pub const GAME_TYPE_SND: i8 = 3;
+const AUTO_BALANCE_DELAY: f32 = 4.0;
+
+pub type BaboNetId = u32;
+
+#[derive(Debug, Clone)]
+pub struct CoordFrame {
+    pub frame_id: i32,
+    pub position: [f32; 3],
+    pub vel: [f32; 3],
+    pub mouse: [f32; 3],
+}
+
+impl Default for CoordFrame {
+    fn default() -> Self {
+        Self {
+            frame_id: 0,
+            position: [0.0, 0.0, 0.25],
+            vel: [0.0, 0.0, 0.0],
+            mouse: [0.0, 0.0, 0.0],
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Player {
+    pub slot: usize,
+    pub babonet_id: BaboNetId,
+    pub name: String,
+    pub ip: String,
+    pub team_id: i8,
+    pub status: i8,
+    pub weapon_id: i8,
+    pub melee_id: i8,
+    pub skin: [u8; 7],
+    pub red_decal: [u8; 3],
+    pub green_decal: [u8; 3],
+    pub blue_decal: [u8; 3],
+    pub kills: i16,
+    pub deaths: i16,
+    pub score: i16,
+    pub returns: i16,
+    pub flag_attempts: i16,
+    pub damage: i16,
+    pub life: f32,
+    pub dmg: f32,
+    pub cf: CoordFrame,
+    pub wait_for_pong: bool,
+    pub ping_frames: i32,
+    pub ping_ms: i16,
+    pub handshake_done: bool,
+    pub spawned_once: bool,
+    pub is_bot: bool,
+    pub bot_fire_cooldown: f32,
+    pub bot_respawn_timer: f32,
+    pub bot_wander_angle: f32,
+    pub bot_stuck_time: f32,
+    pub bot_goal_refresh: f32,
+    pub bot_goal: [f32; 2],
+    pub bot_brain: BotBrain,
+    pub time_to_spawn: f32,
+    /// `_PRO_` Champion/S&D keeps one five-point spawn group per mini-round.
+    pub snd_spawn_slot: Option<usize>,
+    /// Server-owned weapon clock (`Player::mfElapsedSinceLastShot`).
+    pub elapsed_since_last_shot: f32,
+    /// Server-owned flamethrower hold timer (used for authoritative aim spread timing).
+    pub flame_seconds_fired: f32,
+    /// Server-owned native bloom angle in degrees (`Weapon::currentImp`).
+    pub weapon_current_imp: f32,
+    pub weapon_shot_sequence: u32,
+    /// Number of pellets accepted in the current shotgun/sniper burst.
+    pub burst_shot_count: u8,
+    pub grenades_left: u8,
+    pub molotovs_left: u8,
+    pub grenade_elapsed: f32,
+    pub molotov_elapsed: f32,
+    pub melee_elapsed: f32,
+    pub flame_burn_stacks: u8,
+    pub flame_stack_decay: f32,
+    pub molotov_kill_streak: u8,
+    pub molotov_kill_streak_decay: f32,
+    pub protection_remaining: f32,
+    pub spawn_immunity_remaining: f32,
+    pub nuke_remaining: f32,
+    pub photon_frames: u8,
+    pub photon_from: [f32; 3],
+    pub photon_to: [f32; 3],
+    /// Server time since the last accepted client movement sample.
+    pub coord_elapsed: f32,
+}
+
+impl Player {
+    pub fn new(slot: usize, babonet_id: BaboNetId, ip: String) -> Self {
+        Self {
+            slot,
+            babonet_id,
+            name: format!("Player{slot}"),
+            ip,
+            team_id: PLAYER_TEAM_SPECTATOR,
+            status: PLAYER_STATUS_LOADING,
+            weapon_id: 0,
+            melee_id: 8,
+            skin: *b"skin10\0",
+            red_decal: [255, 255, 255],
+            green_decal: [255, 255, 255],
+            blue_decal: [255, 255, 255],
+            kills: 0,
+            deaths: 0,
+            score: 0,
+            returns: 0,
+            flag_attempts: 0,
+            damage: 0,
+            life: 1.0,
+            dmg: 0.0,
+            cf: CoordFrame::default(),
+            wait_for_pong: false,
+            ping_frames: 0,
+            ping_ms: 33,
+            handshake_done: false,
+            spawned_once: false,
+            is_bot: false,
+            bot_fire_cooldown: 0.0,
+            bot_respawn_timer: 0.0,
+            bot_wander_angle: 0.0,
+            bot_stuck_time: 0.0,
+            bot_goal_refresh: 0.0,
+            bot_goal: [0.0, 0.0],
+            bot_brain: BotBrain::default(),
+            time_to_spawn: 0.0,
+            snd_spawn_slot: None,
+            // A newly-created/spawned player may fire immediately.
+            elapsed_since_last_shot: f32::INFINITY,
+            flame_seconds_fired: 0.0,
+            weapon_current_imp: 1.0,
+            weapon_shot_sequence: 0,
+            burst_shot_count: 0,
+            grenades_left: 2,
+            molotovs_left: 1,
+            grenade_elapsed: f32::INFINITY,
+            molotov_elapsed: f32::INFINITY,
+            melee_elapsed: f32::INFINITY,
+            flame_burn_stacks: 0,
+            flame_stack_decay: 0.0,
+            molotov_kill_streak: 0,
+            molotov_kill_streak_decay: 0.0,
+            protection_remaining: 0.0,
+            spawn_immunity_remaining: 0.0,
+            nuke_remaining: 0.0,
+            photon_frames: 0,
+            photon_from: [0.0; 3],
+            photon_to: [0.0; 3],
+            coord_elapsed: 0.0,
+        }
+    }
+
+    pub fn enum_state_bytes(&self) -> Vec<u8> {
+        let mut p = vec![0u8; 96];
+        p[0] = self.slot as u8;
+        write_name31(&mut p[1..33], &self.name);
+        p[33] = self.team_id as u8;
+        p[34] = self.status as u8;
+        p[35..37].copy_from_slice(&self.kills.to_le_bytes());
+        p[37..39].copy_from_slice(&self.deaths.to_le_bytes());
+        p[39..41].copy_from_slice(&self.score.to_le_bytes());
+        p[41..43].copy_from_slice(&self.returns.to_le_bytes());
+        p[43..45].copy_from_slice(&self.flag_attempts.to_le_bytes());
+        p[45..47].copy_from_slice(&self.damage.to_le_bytes());
+        p[47..51].copy_from_slice(&self.life.to_le_bytes());
+        p[51..55].copy_from_slice(&self.dmg.to_le_bytes());
+        p[55] = self.weapon_id as u8;
+        write_ip16(&mut p[56..72], &self.ip);
+        p[72..76].copy_from_slice(&(self.babonet_id as i32).to_le_bytes());
+        p[76..83].copy_from_slice(&self.skin);
+        p[83..86].copy_from_slice(&self.red_decal);
+        p[86..89].copy_from_slice(&self.green_decal);
+        p[89..92].copy_from_slice(&self.blue_decal);
+        p
+    }
+}
+
+#[derive(Debug)]
+pub struct MapTransfer {
+    pub babonet_id: BaboNetId,
+    pub data: Vec<u8>,
+    pub offset: usize,
+}
+
+pub struct GameServer {
+    pub config: ServerConfig,
+    pub players: [Option<Player>; MAX_PLAYER],
+    pub sessions: HashMap<BaboNetId, mpsc::UnboundedSender<Vec<u8>>>,
+    next_babonet: AtomicU32,
+    pub map_spawns: MapSpawns,
+    pub map_grid: MapGrid,
+    pub map_list: Vec<String>,
+    pub blue_score: i16,
+    pub red_score: i16,
+    pub blue_win: i16,
+    pub red_win: i16,
+    pub round_state: i8,
+    pub round_end_remaining: f32,
+    pub auto_balance_remaining: f32,
+    pub frame_id: i32,
+    pub game_time_left: f32,
+    pub round_time_left: f32,
+    pub map_transfers: Vec<MapTransfer>,
+    pub projectiles: Vec<projectile::ServerProjectile>,
+    pub next_projectile_id: i32,
+    pub ctf: CtfState,
+    started: Instant,
+}
+
+impl GameServer {
+    pub fn new(config: ServerConfig) -> Self {
+        let game_time_limit = config.game_time_limit;
+        let round_time_left = if config.game_type == GAME_TYPE_SND {
+            snd::SND_ROUND_TIME
+        } else {
+            600.0
+        };
+        let map_path = config.map_path(&config.map_name);
+        let map_spawns = load_map_spawns(&map_path).unwrap_or_else(|e| {
+            tracing::warn!("map spawn parse {:?}: {e}", map_path);
+            MapSpawns {
+                name: config.map_name.clone(),
+                ..Default::default()
+            }
+        });
+        let map_grid = MapGrid::load(&map_path).unwrap_or_else(|e| {
+            tracing::warn!("map grid parse {:?}: {e}", map_path);
+            MapGrid::empty(map_spawns.clone())
+        });
+        tracing::info!(
+            "map {} ({}x{}, {} dm spawns)",
+            map_spawns.name,
+            map_spawns.size_x,
+            map_spawns.size_y,
+            map_spawns.dm.len()
+        );
+        let flag_pod = ctf::map_flag_pod(&map_spawns);
+        let ctf_state = CtfState::new(flag_pod);
+        if config.game_type == GAME_TYPE_CTF {
+            if ctf_state.supports_ctf() {
+                tracing::info!(
+                    "CTF flags: blue pod ({:.1},{:.1}) red pod ({:.1},{:.1})",
+                    flag_pod[0][0],
+                    flag_pod[0][1],
+                    flag_pod[1][0],
+                    flag_pod[1][1],
+                );
+            } else {
+                tracing::warn!(
+                    "map {} has no flag pods — CTF scoring disabled",
+                    map_spawns.name
+                );
+            }
+        }
+        let map_list = crate::config::list_maps(&config.maps_dir());
+        let mut server = Self {
+            config,
+            players: std::array::from_fn(|_| None),
+            sessions: HashMap::new(),
+            next_babonet: AtomicU32::new(1),
+            map_spawns,
+            map_grid,
+            map_list,
+            blue_score: 0,
+            red_score: 0,
+            blue_win: 0,
+            red_win: 0,
+            round_state: GAME_PLAYING,
+            round_end_remaining: 0.0,
+            auto_balance_remaining: 0.0,
+            frame_id: 0,
+            game_time_left: game_time_limit,
+            round_time_left,
+            map_transfers: Vec::new(),
+            projectiles: Vec::new(),
+            next_projectile_id: 1,
+            ctf: ctf_state,
+            started: Instant::now(),
+        };
+        spawn_initial_bots(&mut server);
+        server
+    }
+
+    pub fn alloc_babonet_id(&self) -> BaboNetId {
+        self.next_babonet.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub fn register_session(&mut self, id: BaboNetId, tx: mpsc::UnboundedSender<Vec<u8>>) {
+        self.sessions.insert(id, tx);
+    }
+
+    pub fn unregister_session(&mut self, id: BaboNetId) {
+        self.sessions.remove(&id);
+    }
+
+    pub fn send_to(&self, id: BaboNetId, data: Vec<u8>) {
+        if let Some(tx) = self.sessions.get(&id) {
+            let _ = tx.send(data);
+        }
+    }
+
+    pub fn broadcast(&self, data: Vec<u8>) {
+        for tx in self.sessions.values() {
+            let _ = tx.send(data.clone());
+        }
+    }
+
+    pub fn find_slot_by_babonet(&self, id: BaboNetId) -> Option<usize> {
+        self.players
+            .iter()
+            .position(|p| p.as_ref().map(|pl| pl.babonet_id == id).unwrap_or(false))
+    }
+
+    pub fn connect_client(&mut self, babonet_id: BaboNetId, ip: String) -> Option<usize> {
+        let max = self.config.max_players.min(MAX_PLAYER);
+        if !(0..max).any(|slot| self.players[slot].is_none()) {
+            if let Some(slot) = (0..max).rev().find(|&slot| {
+                self.players[slot]
+                    .as_ref()
+                    .is_some_and(|player| player.is_bot)
+            }) {
+                self.remove_bot(slot);
+            }
+        }
+        for slot in 0..max {
+            if self.players[slot].is_none() {
+                self.players[slot] = Some(Player::new(slot, babonet_id, ip));
+                let pid = slot as i8;
+                self.broadcast(packet::newplayer(pid, babonet_id as i32));
+                self.send_to(babonet_id, packet::gameversion());
+                tracing::info!("player slot {slot} babonet {babonet_id}");
+                return Some(slot);
+            }
+        }
+        None
+    }
+
+    pub fn disconnect_babonet(&mut self, babonet_id: BaboNetId) {
+        let mut removed_human = false;
+        if let Some(slot) = self.find_slot_by_babonet(babonet_id) {
+            let pid = slot as i8;
+            ctf::drop_carrier_flags(self, slot);
+            removed_human = self.players[slot]
+                .as_ref()
+                .is_some_and(|player| !player.is_bot);
+            self.players[slot] = None;
+            self.broadcast(packet::player_disconnect(pid));
+            tracing::info!("disconnect slot {slot}");
+        }
+        self.unregister_session(babonet_id);
+        if removed_human {
+            reconcile_bot_roster(self);
+        }
+    }
+
+    fn team_counts_without(&self, excluded: usize) -> (usize, usize) {
+        self.players
+            .iter()
+            .enumerate()
+            .filter(|(slot, _)| *slot != excluded)
+            .filter_map(|(_, player)| player.as_ref())
+            .fold((0, 0), |(blue, red), player| match player.team_id {
+                PLAYER_TEAM_BLUE => (blue + 1, red),
+                PLAYER_TEAM_RED => (blue, red + 1),
+                _ => (blue, red),
+            })
+    }
+
+    fn team_join_allowed(&self, slot: usize, requested: i8) -> bool {
+        if requested == PLAYER_TEAM_SPECTATOR || !matches!(self.config.game_type, 1 | GAME_TYPE_CTF)
+        {
+            return true;
+        }
+        let (mut blue, mut red) = self.team_counts_without(slot);
+        if requested == PLAYER_TEAM_BLUE {
+            blue += 1;
+        } else {
+            red += 1;
+        }
+        blue.abs_diff(red) <= 1
+    }
+
+    fn tick_auto_balance(&mut self, dt: f32) {
+        if !matches!(self.config.game_type, 1 | GAME_TYPE_CTF) {
+            self.auto_balance_remaining = 0.0;
+            return;
+        }
+        let (blue, red) = self.team_counts_without(MAX_PLAYER);
+        if blue.abs_diff(red) <= 1 {
+            self.auto_balance_remaining = 0.0;
+            return;
+        }
+        if self.auto_balance_remaining == 0.0 {
+            self.auto_balance_remaining = AUTO_BALANCE_DELAY;
+            self.broadcast(packet::encode_frame(ids::NET_SVCL_AUTOBALANCE, &[]));
+            return;
+        }
+        self.auto_balance_remaining = (self.auto_balance_remaining - dt).max(0.0);
+        if self.auto_balance_remaining > 0.0 {
+            return;
+        }
+        let (from, to, carried_flag) = if blue > red {
+            (PLAYER_TEAM_BLUE, PLAYER_TEAM_RED, 1usize)
+        } else {
+            (PLAYER_TEAM_RED, PLAYER_TEAM_BLUE, 0usize)
+        };
+        let eligible = |slot: usize, bots_only: bool| {
+            self.ctf.flag_state[carried_flag] != slot as i8
+                && self.players[slot]
+                    .as_ref()
+                    .is_some_and(|player| player.team_id == from && (!bots_only || player.is_bot))
+        };
+        let candidate = (0..MAX_PLAYER)
+            .rev()
+            .find(|&slot| eligible(slot, true))
+            .or_else(|| (0..MAX_PLAYER).rev().find(|&slot| eligible(slot, false)));
+        if let Some(slot) = candidate {
+            if let Some(player) = self.players[slot].as_mut() {
+                player.team_id = to;
+            }
+            self.broadcast(packet::encode_frame(
+                ids::NET_CLSV_SVCL_TEAM_REQUEST,
+                &[slot as u8, to as u8],
+            ));
+        }
+    }
+
+    /// Native GameSpawn.cpp selection, with occupied-point tie avoidance.
+    pub fn pick_spawn_for(&self, team_id: i8, exclude_slot: Option<usize>) -> [f32; 3] {
+        let list = if !self.map_spawns.dm.is_empty() {
+            &self.map_spawns.dm
+        } else {
+            match team_id {
+                PLAYER_TEAM_BLUE if !self.map_spawns.blue.is_empty() => &self.map_spawns.blue,
+                PLAYER_TEAM_RED if !self.map_spawns.red.is_empty() => &self.map_spawns.red,
+                _ => {
+                    return [
+                        self.map_spawns.size_x as f32 * 0.5,
+                        self.map_spawns.size_y as f32 * 0.5,
+                        0.25,
+                    ];
+                }
+            }
+        };
+        let relevant: Vec<_> = self
+            .players
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, player)| {
+                let player = player.as_ref()?;
+                if Some(slot) == exclude_slot || player.status != PLAYER_STATUS_ALIVE {
+                    return None;
+                }
+                let enemy =
+                    matches!(self.config.game_type, 0 | GAME_TYPE_SND) || player.team_id != team_id;
+                enemy.then_some(player.cf.position)
+            })
+            .collect();
+        if relevant.is_empty() {
+            return list[(self.frame_id as usize + exclude_slot.unwrap_or(0)) % list.len()];
+        }
+        let score = |point: &[f32; 3]| {
+            relevant.iter().fold(f32::INFINITY, |nearest, player| {
+                nearest.min((point[0] - player[0]).powi(2) + (point[1] - player[1]).powi(2))
+            })
+        };
+        list.iter()
+            .copied()
+            .enumerate()
+            .max_by(|(ia, a), (ib, b)| score(a).total_cmp(&score(b)).then_with(|| ib.cmp(ia)))
+            .map(|(_, point)| [point[0], point[1], 0.25])
+            .unwrap()
+    }
+
+    pub fn tick(&mut self, dt: f32) {
+        self.frame_id += 1;
+        if self.config.game_time_limit > 0.0 {
+            self.game_time_left = (self.game_time_left - dt).max(0.0);
+        }
+        self.round_time_left = (self.round_time_left - dt).max(0.0);
+        self.tick_auto_balance(dt);
+
+        let mut done = Vec::new();
+        let mut chunks: Vec<(BaboNetId, Vec<u8>)> = Vec::new();
+        for (i, tr) in self.map_transfers.iter_mut().enumerate() {
+            if tr.offset >= tr.data.len() {
+                done.push(i);
+                continue;
+            }
+            let end = (tr.offset + 250).min(tr.data.len());
+            chunks.push((tr.babonet_id, packet::map_chunk(&tr.data[tr.offset..end])));
+            tr.offset = end;
+            if tr.offset >= tr.data.len() {
+                done.push(i);
+            }
+        }
+        for (id, chunk) in chunks {
+            self.send_to(id, chunk);
+        }
+        for i in done.into_iter().rev() {
+            self.map_transfers.remove(i);
+        }
+
+        if self.round_state == GAME_PLAYING {
+            tick_bots(self, dt);
+            projectile::tick_projectiles(self, dt);
+            shoot::tick_special_weapons(self, dt);
+            shoot::tick_photon_beams(self);
+            ctf::tick_ctf(self);
+            snd::tick_snd(self);
+        }
+        ctf::tick_match_lifecycle(self, dt);
+
+        for slot in 0..MAX_PLAYER {
+            if let Some(p) = self.players[slot].as_mut() {
+                p.elapsed_since_last_shot = (p.elapsed_since_last_shot + dt).min(60.0);
+                p.weapon_current_imp =
+                    shoot::recover_weapon_spread(p.weapon_id, p.weapon_current_imp, dt);
+                p.grenade_elapsed = (p.grenade_elapsed + dt).min(60.0);
+                p.molotov_elapsed = (p.molotov_elapsed + dt).min(60.0);
+                p.melee_elapsed = (p.melee_elapsed + dt).min(60.0);
+                if p.flame_stack_decay > 0.0 {
+                    p.flame_stack_decay = (p.flame_stack_decay - dt).max(0.0);
+                    if p.flame_stack_decay == 0.0 {
+                        p.flame_burn_stacks = 0;
+                    }
+                }
+                if p.molotov_kill_streak_decay > 0.0 {
+                    p.molotov_kill_streak_decay = (p.molotov_kill_streak_decay - dt).max(0.0);
+                    if p.molotov_kill_streak_decay == 0.0 {
+                        p.molotov_kill_streak = 0;
+                    }
+                }
+                p.coord_elapsed = (p.coord_elapsed + dt).min(1.0);
+                p.protection_remaining = (p.protection_remaining - dt).max(0.0);
+                p.spawn_immunity_remaining = (p.spawn_immunity_remaining - dt).max(0.0);
+                if !p.is_bot && p.status == PLAYER_STATUS_DEAD && p.time_to_spawn > 0.0 {
+                    p.time_to_spawn = (p.time_to_spawn - dt).max(0.0);
+                }
+            }
+        }
+
+        let frame_id = self.frame_id;
+        let timer = packet::synchronize_timer(frame_id, self.game_time_left, self.round_time_left);
+
+        for slot in 0..MAX_PLAYER {
+            let ping_to_send = {
+                let Some(player) = self.players[slot].as_ref() else {
+                    continue;
+                };
+                if player.is_bot {
+                    continue;
+                }
+                if player.status == PLAYER_STATUS_LOADING {
+                    continue;
+                }
+                if player.status == PLAYER_STATUS_DEAD && !player.spawned_once {
+                    continue;
+                }
+                if !player.wait_for_pong && player.ping_frames >= 30 {
+                    Some((player.babonet_id, slot as i8))
+                } else {
+                    None
+                }
+            };
+            if let Some((bid, pid)) = ping_to_send {
+                if let Some(p) = self.players[slot].as_mut() {
+                    p.ping_frames = 0;
+                    p.wait_for_pong = true;
+                }
+                self.send_to(bid, packet::ping(pid));
+            }
+
+            let disconnect_bid = {
+                let Some(player) = self.players[slot].as_mut() else {
+                    continue;
+                };
+                if player.status == PLAYER_STATUS_LOADING {
+                    continue;
+                }
+                if player.status == PLAYER_STATUS_DEAD && !player.spawned_once {
+                    continue;
+                }
+                if player.wait_for_pong && player.ping_frames > 300 {
+                    Some(player.babonet_id)
+                } else {
+                    if player.wait_for_pong && player.ping_frames > 30 {
+                        player.ping_ms = player.ping_frames as i16;
+                    }
+                    player.ping_frames += 1;
+                    None
+                }
+            };
+            if let Some(bid) = disconnect_bid {
+                self.disconnect_babonet(bid);
+            }
+        }
+
+        for j in 0..MAX_PLAYER {
+            let Some(pj) = self.players[j].as_ref() else {
+                continue;
+            };
+            if pj.status != PLAYER_STATUS_ALIVE {
+                continue;
+            }
+            let cf = build_coord_frame(j as i8, pj.babonet_id as i32, &pj.cf);
+            for i in 0..MAX_PLAYER {
+                let Some(pi) = self.players[i].as_ref() else {
+                    continue;
+                };
+                if pi.handshake_done {
+                    self.send_to(pi.babonet_id, cf.clone());
+                }
+            }
+        }
+
+        for i in 0..MAX_PLAYER {
+            let Some(pi) = self.players[i].as_ref() else {
+                continue;
+            };
+            if !pi.handshake_done {
+                continue;
+            }
+            self.send_to(pi.babonet_id, timer.clone());
+            for j in 0..MAX_PLAYER {
+                let Some(pj) = self.players[j].as_ref() else {
+                    continue;
+                };
+                self.send_to(pi.babonet_id, packet::player_ping(j as i8, pj.ping_ms));
+            }
+        }
+    }
+
+    fn rotate_to_next_map(&mut self) {
+        if self.map_list.is_empty() {
+            return;
+        }
+        let current = self
+            .map_list
+            .iter()
+            .position(|name| name == &self.config.map_name)
+            .unwrap_or(0);
+        for offset in 1..=self.map_list.len() {
+            let name = self.map_list[(current + offset) % self.map_list.len()].clone();
+            let path = self.config.map_path(&name);
+            let Ok(spawns) = load_map_spawns(&path) else {
+                continue;
+            };
+            let compatible = match self.config.game_type {
+                GAME_TYPE_CTF => {
+                    spawns.flag_pod.iter().all(|pod| *pod != [0.0; 3])
+                        && !spawns.blue.is_empty()
+                        && !spawns.red.is_empty()
+                }
+                1 => !spawns.blue.is_empty() && !spawns.red.is_empty(),
+                _ => !spawns.dm.is_empty(),
+            };
+            if !compatible {
+                continue;
+            }
+            let Ok(grid) = MapGrid::load(&path) else {
+                continue;
+            };
+            self.config.map_name = name;
+            self.map_spawns = spawns;
+            self.map_grid = grid;
+            self.ctf = CtfState::new(ctf::map_flag_pod(&self.map_spawns));
+            break;
+        }
+    }
+
+    pub fn handle_frame(&mut self, babonet_id: BaboNetId, type_id: u16, payload: &[u8]) {
+        match type_id {
+            ids::NET_CLSV_PONG => {
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                if let Some(p) = self.players.get_mut(pid).and_then(Option::as_mut) {
+                    if p.babonet_id == babonet_id {
+                        p.wait_for_pong = false;
+                        p.ping_ms = p.ping_frames as i16;
+                        p.ping_frames = 0;
+                    }
+                }
+            }
+            ids::NET_CLSV_GAMEVERSION_ACCEPTED => {
+                if payload.len() < 17 {
+                    return;
+                }
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                let pass = packet::read_str(payload, 1, 16);
+                if !self.config.password.is_empty() && pass != self.config.password {
+                    self.disconnect_babonet(babonet_id);
+                    return;
+                }
+                let Some(p) = self.players.get_mut(pid).and_then(Option::as_mut) else {
+                    return;
+                };
+                if p.babonet_id != babonet_id {
+                    return;
+                }
+                p.wait_for_pong = false;
+                p.ping_frames = 0;
+                p.handshake_done = true;
+                p.status = PLAYER_STATUS_DEAD;
+
+                self.send_to(
+                    babonet_id,
+                    packet::server_info(
+                        &self.config.map_name,
+                        self.config.game_type,
+                        self.blue_score,
+                        self.red_score,
+                        self.blue_win,
+                        self.red_win,
+                    ),
+                );
+                self.send_to(babonet_id, packet::round_state(self.round_state, false));
+                send_flag_enum_to(self, babonet_id);
+                for frame in projectile::snapshot_frames(&self.projectiles) {
+                    self.send_to(babonet_id, frame);
+                }
+
+                for i in 0..MAX_PLAYER {
+                    if i == pid {
+                        continue;
+                    }
+                    let Some(other) = self.players[i].as_ref() else {
+                        continue;
+                    };
+                    let body = other.enum_state_bytes();
+                    self.send_to(
+                        babonet_id,
+                        packet::encode_frame(ids::NET_SVCL_PLAYER_ENUM_STATE, &body),
+                    );
+                    if other.spawned_once && other.status == PLAYER_STATUS_ALIVE {
+                        self.send_to(
+                            babonet_id,
+                            packet::encode_frame(
+                                ids::NET_SVCL_PLAYER_SPAWN,
+                                &player_spawn_bytes(i, other),
+                            ),
+                        );
+                    }
+                }
+                if let Some(p) = self.players[pid].as_ref() {
+                    let body = p.enum_state_bytes();
+                    self.broadcast(packet::encode_frame(ids::NET_SVCL_PLAYER_ENUM_STATE, &body));
+                }
+            }
+            ids::NET_CLSV_SVCL_PLAYER_INFO => {
+                if payload.len() < 33 {
+                    return;
+                }
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                let name = packet::read_str(payload, 1, 32);
+                if let Some(p) = self.players.get_mut(pid).and_then(Option::as_mut) {
+                    if p.babonet_id != babonet_id {
+                        return;
+                    }
+                    p.name = if name.is_empty() {
+                        p.name.clone()
+                    } else {
+                        name
+                    };
+                    let mut out = payload.to_vec();
+                    if out.len() >= 48 {
+                        write_ip16(&mut out[17..33], &p.ip);
+                    }
+                    let enum_body = p.enum_state_bytes();
+                    self.broadcast(packet::encode_frame(ids::NET_CLSV_SVCL_PLAYER_INFO, &out));
+                    self.broadcast(packet::encode_frame(
+                        ids::NET_SVCL_PLAYER_ENUM_STATE,
+                        &enum_body,
+                    ));
+                }
+            }
+            ids::NET_CLSV_SVCL_TEAM_REQUEST => {
+                if payload.len() < 2 {
+                    return;
+                }
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                let team = payload[1] as i8;
+                if !valid_player_team(team) {
+                    tracing::warn!("team request rejected: player={pid} invalid team={team}");
+                    return;
+                }
+                if !self.team_join_allowed(pid, team) {
+                    let current = self.players[pid]
+                        .as_ref()
+                        .map(|player| player.team_id)
+                        .unwrap_or(PLAYER_TEAM_SPECTATOR);
+                    tracing::info!(
+                        "team request rejected: player={pid} requested={team} would unbalance teams"
+                    );
+                    self.send_to(
+                        babonet_id,
+                        packet::encode_frame(
+                            ids::NET_CLSV_SVCL_TEAM_REQUEST,
+                            &[pid as u8, current as u8],
+                        ),
+                    );
+                    return;
+                }
+                let mut changed_team = false;
+                if let Some(p) = self.players.get_mut(pid).and_then(Option::as_mut) {
+                    if p.babonet_id != babonet_id {
+                        return;
+                    }
+                    // Game.cpp:942 — only an actual switch kills you and costs a respawn wait.
+                    if p.team_id != team {
+                        changed_team = true;
+                        p.team_id = team;
+                        p.status = PLAYER_STATUS_DEAD;
+                        p.life = 0.0;
+                        p.time_to_spawn = if team == PLAYER_TEAM_SPECTATOR {
+                            0.0
+                        } else {
+                            SV_TIME_TO_SPAWN
+                        };
+                    }
+                } else {
+                    return;
+                }
+                if changed_team {
+                    crate::game::ctf::drop_carrier_flags(self, pid);
+                }
+                self.broadcast(packet::encode_frame(
+                    ids::NET_CLSV_SVCL_TEAM_REQUEST,
+                    payload,
+                ));
+                if changed_team {
+                    reconcile_bot_roster(self);
+                }
+            }
+            ids::NET_CLSV_SPAWN_REQUEST => {
+                if self.round_state != GAME_PLAYING {
+                    return;
+                }
+                if payload.len() < 4 {
+                    return;
+                }
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                let weapon = payload[1] as i8;
+                let melee = payload[2] as i8;
+                if !shoot::is_primary_weapon(weapon) || !shoot::is_melee_weapon(melee) {
+                    tracing::warn!(
+                        "spawn rejected: player={pid} invalid weapon={weapon} melee={melee}"
+                    );
+                    return;
+                }
+                let team_id = self
+                    .players
+                    .get(pid)
+                    .and_then(|p| p.as_ref())
+                    .filter(|p| p.babonet_id == babonet_id)
+                    .map(|p| p.team_id)
+                    .unwrap_or(PLAYER_TEAM_SPECTATOR);
+                // PlayerUpdate.cpp:388 — only blue/red ever request a spawn.
+                if team_id != PLAYER_TEAM_BLUE && team_id != PLAYER_TEAM_RED {
+                    return;
+                }
+                let pos = if self.config.game_type == GAME_TYPE_SND {
+                    snd::pick_spawn(self, pid)
+                } else {
+                    self.pick_spawn_for(team_id, Some(pid))
+                };
+                let Some(p) = self.players[pid].as_mut() else {
+                    return;
+                };
+                if p.babonet_id != babonet_id {
+                    return;
+                }
+                if p.time_to_spawn > 0.0 {
+                    return;
+                }
+
+                p.weapon_id = weapon;
+                p.melee_id = melee;
+                if payload.len() >= 22 {
+                    p.skin.copy_from_slice(&payload[3..10.min(payload.len())]);
+                    p.red_decal.copy_from_slice(&payload[10..13]);
+                    p.green_decal.copy_from_slice(&payload[13..16]);
+                    p.blue_decal.copy_from_slice(&payload[16..19]);
+                }
+                p.cf.position = pos;
+                p.cf.vel = [0.0, 0.0, 0.0];
+                p.status = PLAYER_STATUS_ALIVE;
+                p.life = 1.0;
+                p.time_to_spawn = 0.0;
+                p.spawned_once = true;
+                p.elapsed_since_last_shot = f32::INFINITY;
+                p.flame_seconds_fired = 0.0;
+                p.weapon_current_imp = shoot::weapon_start_spread(weapon);
+                p.weapon_shot_sequence = 0;
+                p.burst_shot_count = 0;
+                p.grenades_left = 2;
+                p.molotovs_left = 1;
+                p.grenade_elapsed = f32::INFINITY;
+                p.molotov_elapsed = f32::INFINITY;
+                p.melee_elapsed = f32::INFINITY;
+                p.flame_burn_stacks = 0;
+                p.flame_stack_decay = 0.0;
+                p.molotov_kill_streak = 0;
+                p.molotov_kill_streak_decay = 0.0;
+                p.protection_remaining = 0.0;
+                p.spawn_immunity_remaining = SPAWN_IMMUNITY_TIME;
+                p.nuke_remaining = 0.0;
+                p.photon_frames = 0;
+                p.coord_elapsed = 0.0;
+
+                let body = player_spawn_bytes(pid, p);
+                let enum_body = p.enum_state_bytes();
+                self.broadcast(packet::encode_frame(ids::NET_SVCL_PLAYER_SPAWN, &body));
+                self.broadcast(packet::encode_frame(
+                    ids::NET_SVCL_PLAYER_ENUM_STATE,
+                    &enum_body,
+                ));
+            }
+            ids::NET_CLSV_SVCL_PLAYER_COORD_FRAME => {
+                if self.round_state != GAME_PLAYING {
+                    return;
+                }
+                if payload.len() < 28 {
+                    return;
+                }
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                let Some(p) = self.players.get_mut(pid).and_then(Option::as_mut) else {
+                    return;
+                };
+                if p.babonet_id != babonet_id || p.status != PLAYER_STATUS_ALIVE {
+                    return;
+                }
+
+                let frame_id = packet::read_i32(payload, 1).unwrap_or(0);
+                if frame_id <= p.cf.frame_id && p.cf.frame_id != 0 {
+                    return;
+                }
+                let previous = p.cf.position;
+                let previous_velocity = p.cf.vel;
+                let mut requested = [
+                    packet::read_i16(payload, 5).unwrap_or(0) as f32 / ids::WIRE_POS,
+                    packet::read_i16(payload, 7).unwrap_or(0) as f32 / ids::WIRE_POS,
+                    packet::read_i16(payload, 9).unwrap_or(0) as f32 / ids::WIRE_POS,
+                ];
+                let mut velocity = [
+                    payload.get(11).copied().unwrap_or(0) as i8 as f32 / ids::WIRE_VEL,
+                    payload.get(12).copied().unwrap_or(0) as i8 as f32 / ids::WIRE_VEL,
+                    payload.get(13).copied().unwrap_or(0) as i8 as f32 / ids::WIRE_VEL,
+                ];
+                bound_client_movement(
+                    &self.map_grid,
+                    previous,
+                    previous_velocity,
+                    &mut requested,
+                    &mut velocity,
+                    p.coord_elapsed,
+                );
+                perform_collision_xy(
+                    &self.map_grid,
+                    previous,
+                    &mut requested,
+                    &mut velocity,
+                    0.25,
+                );
+
+                p.cf.frame_id = frame_id;
+                p.cf.position = requested;
+                p.cf.vel = velocity;
+                p.cf.mouse[0] = packet::read_i16(payload, 14).unwrap_or(0) as f32 / ids::WIRE_POS;
+                p.cf.mouse[1] = packet::read_i16(payload, 16).unwrap_or(0) as f32 / ids::WIRE_POS;
+                p.cf.mouse[2] = packet::read_i16(payload, 18).unwrap_or(0) as f32 / ids::WIRE_POS;
+                p.ping_frames = 0;
+                p.coord_elapsed = 0.0;
+
+                let relay = build_coord_frame(pid as i8, p.babonet_id as i32, &p.cf);
+                let fell_to_death = p.cf.position[2] <= 0.0;
+                for other in self.players.iter().flatten() {
+                    if other.babonet_id != babonet_id {
+                        self.send_to(other.babonet_id, relay.clone());
+                    }
+                }
+                if fell_to_death {
+                    shoot::apply_world_damage(self, pid, 13, 2.0);
+                }
+            }
+            ids::NET_CLSV_PICKUP_REQUEST => {
+                if payload.len() < 10 {
+                    return;
+                }
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                let item_type = payload[1] as i8;
+                if !matches!(item_type, 1..=3) {
+                    return;
+                }
+                let reported = [
+                    packet::read_i16(payload, 2).unwrap_or(0) as f32 / ids::WIRE_POS,
+                    packet::read_i16(payload, 4).unwrap_or(0) as f32 / ids::WIRE_POS,
+                ];
+                let Some(player) = self.players.get(pid).and_then(Option::as_ref) else {
+                    return;
+                };
+                if player.babonet_id != babonet_id || player.status != PLAYER_STATUS_ALIVE {
+                    return;
+                }
+                let player_distance = (player.cf.position[0] - reported[0])
+                    .hypot(player.cf.position[1] - reported[1]);
+                if player_distance > 0.55 {
+                    return;
+                }
+                let unique_id = packet::read_i32(payload, 6).unwrap_or(0);
+                let Some(index) = self.projectiles.iter().position(|pickup| {
+                    pickup.unique_id == unique_id
+                        && ((item_type == 1 && pickup.kind == 4)
+                            || (item_type == 2 && pickup.kind == 5)
+                            || (item_type == 3 && pickup.kind == 6))
+                        && (pickup.position[0] - player.cf.position[0])
+                            .hypot(pickup.position[1] - player.cf.position[1])
+                            <= 0.5
+                }) else {
+                    return;
+                };
+                let pickup = self.projectiles.remove(index);
+                let mut dropped_weapon = None;
+                if let Some(player) = self.players[pid].as_mut() {
+                    if item_type == 1 {
+                        player.life = (player.life + 0.5).min(1.0);
+                    } else if item_type == 2 {
+                        dropped_weapon =
+                            Some((player.weapon_id, player.cf.position, player.cf.vel));
+                        player.weapon_id = pickup.weapon_id;
+                        player.elapsed_since_last_shot = f32::INFINITY;
+                        player.weapon_current_imp = shoot::weapon_start_spread(pickup.weapon_id);
+                    } else {
+                        player.grenades_left = (player.grenades_left + 1).min(3);
+                    }
+                }
+                if let Some((weapon_id, position, velocity)) = dropped_weapon {
+                    projectile::spawn_weapon_pickup(self, pid, weapon_id, position, velocity);
+                }
+                self.broadcast(packet::encode_frame(
+                    ids::NET_SVCL_PICKUP_ITEM,
+                    &[pid as u8, item_type as u8, pickup.weapon_id as u8],
+                ));
+                self.broadcast(packet::encode_frame(
+                    ids::NET_SVCL_DELETE_PROJECTILE,
+                    &unique_id.to_le_bytes(),
+                ));
+                shoot::broadcast_enum(self, pid);
+            }
+            ids::NET_CLSV_SVCL_CHAT => {
+                if payload.is_empty() {
+                    return;
+                }
+                let frame = packet::encode_frame(ids::NET_CLSV_SVCL_CHAT, payload);
+                // ServerRecv.cpp:562 — -2 goes to everyone, any other value is that team only.
+                let team = payload[0] as i8;
+                if team == CHAT_TEAM_ALL {
+                    self.broadcast(frame);
+                } else {
+                    for p in self.players.iter().flatten() {
+                        if p.team_id == team {
+                            self.send_to(p.babonet_id, frame.clone());
+                        }
+                    }
+                }
+            }
+            ids::NET_CLSV_MAP_LIST_REQUEST => {
+                for name in &self.map_list {
+                    self.send_to(babonet_id, packet::map_list(name));
+                }
+            }
+            ids::NET_CLSV_MAP_REQUEST => {
+                if payload.len() < 16 {
+                    return;
+                }
+                let name = packet::read_str(payload, 0, 16);
+                if !is_advertised_map(&self.map_list, &name) {
+                    tracing::warn!("map request rejected: unadvertised name={name:?}");
+                    return;
+                }
+                let path = self.config.map_path(&name);
+                if let Ok(data) = std::fs::read(&path) {
+                    self.map_transfers.push(MapTransfer {
+                        babonet_id,
+                        data,
+                        offset: 0,
+                    });
+                }
+            }
+            ids::NET_CLSV_PLAYER_SHOOT => {
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                if self
+                    .players
+                    .get(pid)
+                    .and_then(|p| p.as_ref())
+                    .map(|p| p.babonet_id == babonet_id)
+                    .unwrap_or(false)
+                {
+                    shoot::handle_player_shoot(self, pid, payload);
+                }
+            }
+            ids::NET_CLSV_SVCL_PLAYER_PROJECTILE => {
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                if self
+                    .players
+                    .get(pid)
+                    .and_then(|p| p.as_ref())
+                    .map(|p| p.babonet_id == babonet_id)
+                    .unwrap_or(false)
+                {
+                    projectile::handle_spawn_intent(self, pid, payload);
+                } else {
+                    tracing::debug!("projectile ignored: pid={pid} babonet mismatch");
+                }
+            }
+            ids::NET_CLSV_SVCL_PLAYER_SHOOT_MELEE => {
+                if payload.is_empty() {
+                    return;
+                }
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                if self
+                    .players
+                    .get(pid)
+                    .and_then(|p| p.as_ref())
+                    .map(|p| p.babonet_id == babonet_id)
+                    .unwrap_or(false)
+                {
+                    shoot::handle_melee(self, pid, payload);
+                }
+            }
+            ids::NET_CLSV_REPORT_EXPLOSION => {
+                // Deprecated browser extension. Explosions are derived from
+                // server-owned projectile state and client reports are ignored.
+                tracing::debug!("ignored client explosion report from babonet={babonet_id}");
+            }
+            ids::NET_CLSV_REPORT_BURN => {
+                tracing::debug!("ignored client burn report from babonet={babonet_id}");
+            }
+            _ => tracing::debug!("unhandled packet type {type_id}"),
+        }
+    }
+
+    pub fn uptime_secs(&self) -> f64 {
+        self.started.elapsed().as_secs_f64()
+    }
+}
+
+pub(crate) fn player_spawn_bytes(slot: usize, p: &Player) -> Vec<u8> {
+    let pos = p.cf.position;
+    let mut body = vec![0u8; 28];
+    body[0] = slot as u8;
+    body[1] = p.weapon_id as u8;
+    body[2] = p.melee_id as u8;
+    body[3..5].copy_from_slice(&((pos[0] * 10.0) as i16).to_le_bytes());
+    body[5..7].copy_from_slice(&((pos[1] * 10.0) as i16).to_le_bytes());
+    body[7..9].copy_from_slice(&((pos[2] * 10.0) as i16).to_le_bytes());
+    body[9..16].copy_from_slice(&p.skin);
+    body[16..19].copy_from_slice(&p.red_decal);
+    body[19..22].copy_from_slice(&p.green_decal);
+    body[22..25].copy_from_slice(&p.blue_decal);
+    body
+}
+
+fn build_coord_frame(player_id: i8, babonet_id: i32, cf: &CoordFrame) -> Vec<u8> {
+    let mut p = vec![0u8; 28];
+    p[0] = player_id as u8;
+    p[1..5].copy_from_slice(&cf.frame_id.to_le_bytes());
+    p[5..7].copy_from_slice(&((cf.position[0] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[7..9].copy_from_slice(&((cf.position[1] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[9..11].copy_from_slice(&((cf.position[2] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[11] = (cf.vel[0] * ids::WIRE_VEL) as i8 as u8;
+    p[12] = (cf.vel[1] * ids::WIRE_VEL) as i8 as u8;
+    p[13] = (cf.vel[2] * ids::WIRE_VEL) as i8 as u8;
+    p[14..16].copy_from_slice(&((cf.mouse[0] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[16..18].copy_from_slice(&((cf.mouse[1] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[18..20].copy_from_slice(&((cf.mouse[2] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[24..28].copy_from_slice(&babonet_id.to_le_bytes());
+    packet::encode_frame(ids::NET_CLSV_SVCL_PLAYER_COORD_FRAME, &p)
+}
+
+/// Correct client movement to the envelope produced by PlayerUpdate.cpp.
+fn bound_client_movement(
+    map: &MapGrid,
+    previous: [f32; 3],
+    previous_velocity: [f32; 3],
+    requested: &mut [f32; 3],
+    velocity: &mut [f32; 3],
+    elapsed: f32,
+) {
+    const MAX_PLAYER_SPEED: f32 = 3.25;
+    let allowed = MAX_PLAYER_SPEED * elapsed.max(TICK_MS as f32 / 1000.0) + 0.12;
+    let dx = requested[0] - previous[0];
+    let dy = requested[1] - previous[1];
+    let distance = dx.hypot(dy);
+    if distance > allowed {
+        let scale = allowed / distance;
+        requested[0] = previous[0] + dx * scale;
+        requested[1] = previous[1] + dy * scale;
+    }
+    let planar_speed = velocity[0].hypot(velocity[1]);
+    if planar_speed > MAX_PLAYER_SPEED {
+        let scale = MAX_PLAYER_SPEED / planar_speed;
+        velocity[0] *= scale;
+        velocity[1] *= scale;
+    }
+    if map.contains_xy(requested[0], requested[1]) {
+        requested[2] = 0.25;
+        velocity[2] = 0.0;
+    } else {
+        let dt = elapsed.max(TICK_MS as f32 / 1000.0);
+        requested[2] = previous[2] + previous_velocity[2] * dt;
+        let old_speed = previous_velocity[0]
+            .hypot(previous_velocity[1])
+            .hypot(previous_velocity[2]);
+        let friction_scale = if old_speed > 0.0 {
+            (old_speed - 4.0 * dt).max(0.0) / old_speed
+        } else {
+            0.0
+        };
+        velocity[2] = previous_velocity[2] * friction_scale - 9.8 * dt;
+        let speed = velocity[0].hypot(velocity[1]).hypot(velocity[2]);
+        if speed > MAX_PLAYER_SPEED {
+            let scale = MAX_PLAYER_SPEED / speed;
+            velocity[0] *= scale;
+            velocity[1] *= scale;
+            velocity[2] *= scale;
+        }
+    }
+}
+
+pub(crate) fn write_name31(buf: &mut [u8], name: &str) {
+    let n = name.len().min(31);
+    buf[..n].copy_from_slice(&name.as_bytes()[..n]);
+}
+
+fn write_ip16(buf: &mut [u8], ip: &str) {
+    let n = ip.len().min(15);
+    buf[..n].copy_from_slice(&ip.as_bytes()[..n]);
+}
+
+#[cfg(test)]
+mod movement_authority_tests {
+    use super::{
+        bound_client_movement, is_advertised_map, valid_player_team, wire_player_slot, GameServer,
+        Player, GAME_TYPE_CTF, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
+    };
+    use crate::config::ServerConfig;
+    use crate::map::MapGrid;
+
+    fn map() -> MapGrid {
+        MapGrid::fixture(10, &[])
+    }
+
+    #[test]
+    fn malformed_wire_player_ids_are_rejected_before_array_access() {
+        assert_eq!(wire_player_slot(&[]), None);
+        assert_eq!(wire_player_slot(&[31]), Some(31));
+        assert_eq!(wire_player_slot(&[32]), None);
+        assert_eq!(wire_player_slot(&[255]), None);
+    }
+
+    #[test]
+    fn map_download_only_accepts_advertised_basenames() {
+        let maps = vec!["CTF-Alert".to_string()];
+        assert!(is_advertised_map(&maps, "CTF-Alert"));
+        assert!(!is_advertised_map(&maps, "../bv2.cfg"));
+        assert!(!is_advertised_map(&maps, "/etc/passwd"));
+        assert!(!is_advertised_map(&maps, "CTF-Alert.bvm"));
+    }
+
+    #[test]
+    fn only_spectator_blue_and_red_are_valid_team_requests() {
+        assert!([-1, 0, 1].into_iter().all(valid_player_team));
+        assert!(!valid_player_team(-2));
+        assert!(!valid_player_team(2));
+        assert!(!valid_player_team(127));
+    }
+
+    #[test]
+    fn joining_is_rejected_when_it_would_create_a_two_player_team_gap() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 8,
+            bot_count: 0,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        let mut blue = Player::new(0, 1, "blue".into());
+        blue.team_id = PLAYER_TEAM_BLUE;
+        game.players[0] = Some(blue);
+        game.players[1] = Some(Player::new(1, 2, "joining".into()));
+        assert!(!game.team_join_allowed(1, PLAYER_TEAM_BLUE));
+        assert!(game.team_join_allowed(1, PLAYER_TEAM_RED));
+    }
+
+    #[test]
+    fn native_style_autobalance_warns_then_moves_a_non_carrier() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 8,
+            bot_count: 0,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        for slot in 0..3 {
+            let mut player = Player::new(slot, slot as u32 + 1, "blue".into());
+            player.team_id = PLAYER_TEAM_BLUE;
+            game.players[slot] = Some(player);
+        }
+        game.ctf.flag_state[1] = 2;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        game.register_session(99, tx);
+
+        game.tick_auto_balance(0.02);
+        let warning = rx.try_recv().expect("autobalance warning");
+        let frame = crate::net::packet::decode_frame(&warning).unwrap().unwrap();
+        assert_eq!(frame.type_id, crate::net::ids::NET_SVCL_AUTOBALANCE);
+        game.tick_auto_balance(4.1);
+
+        let (blue, red) = game.team_counts_without(super::MAX_PLAYER);
+        assert_eq!((blue, red), (2, 1));
+        assert_eq!(game.players[2].as_ref().unwrap().team_id, PLAYER_TEAM_BLUE);
+    }
+
+    #[test]
+    fn teleport_is_corrected_to_elapsed_speed_envelope() {
+        let previous = [5.0, 5.0, 0.25];
+        let mut requested = [50.0, 5.0, 8.0];
+        let mut velocity = [12.0, 0.0, 4.0];
+        bound_client_movement(
+            &map(),
+            previous,
+            [0.0; 3],
+            &mut requested,
+            &mut velocity,
+            0.1,
+        );
+        assert!((requested[0] - 5.445).abs() < 0.001);
+        assert_eq!(requested[1], 5.0);
+        assert_eq!(requested[2], 0.25);
+        assert!((velocity[0] - 3.25).abs() < 0.001);
+        assert_eq!(velocity[2], 0.0);
+    }
+
+    #[test]
+    fn legitimate_diagonal_sample_is_unchanged() {
+        let previous = [5.0, 5.0, 0.25];
+        let mut requested = [5.1, 5.1, 0.25];
+        let mut velocity = [2.0, 2.0, 0.0];
+        bound_client_movement(
+            &map(),
+            previous,
+            [0.0; 3],
+            &mut requested,
+            &mut velocity,
+            0.05,
+        );
+        assert_eq!(requested, [5.1, 5.1, 0.25]);
+        assert_eq!(velocity, [2.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn movement_beyond_open_edge_falls_under_server_gravity() {
+        let previous = [0.05, 5.0, 0.25];
+        let mut requested = [-0.05, 5.0, 0.25];
+        let mut velocity = [-1.0, 0.0, 0.0];
+        bound_client_movement(
+            &map(),
+            previous,
+            [0.0; 3],
+            &mut requested,
+            &mut velocity,
+            0.1,
+        );
+        assert!(requested[0] < 0.0);
+        assert_eq!(requested[2], 0.25);
+        assert!(velocity[2] < 0.0);
+    }
+}

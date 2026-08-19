@@ -1,0 +1,5 @@
+/server/target/
+.env
+.env.*
+*.pem
+*.key
