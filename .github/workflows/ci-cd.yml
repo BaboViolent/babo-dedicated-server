@@ -38,7 +38,7 @@ jobs:
           context: .
           file: server/Dockerfile
           push: true
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           tags: zot.standouthost.com/standouthost/babo-dedicated-server:${{ github.ref_name }}
       - name: Update Argo CD image tag
         env:
