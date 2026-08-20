@@ -2070,23 +2070,12 @@ impl GameServer {
 }
 
 /// Treat BV2_BOTS as a target population: every connected human replaces one
-/// bot until no bots remain. Rebuilding on human roster changes guarantees a
-/// departed human is replaced and team totals stay as even as possible.
+/// bot until no bots remain. Only the necessary bots leave or join so clients
+/// receive the same single-player roster events they would for humans.
 pub fn reconcile_bot_roster(game: &mut GameServer) {
     if game.config.bot_count == 0 {
         return;
     }
-    let bot_slots: Vec<_> = (0..MAX_PLAYER)
-        .filter(|&slot| {
-            game.players[slot]
-                .as_ref()
-                .is_some_and(|player| player.is_bot)
-        })
-        .collect();
-    for slot in bot_slots {
-        game.remove_bot(slot);
-    }
-
     let max = game.config.max_players.min(MAX_PLAYER);
     let (human_blue, human_red, human_count) = game
         .players
@@ -2115,13 +2104,43 @@ pub fn reconcile_bot_roster(game: &mut GameServer) {
             desired_red += 1;
         }
     }
-    let teams = std::iter::repeat_n(PLAYER_TEAM_BLUE, desired_blue)
-        .chain(std::iter::repeat_n(PLAYER_TEAM_RED, desired_red));
-    for (roster, team) in teams.enumerate() {
+
+    for (team, desired) in [
+        (PLAYER_TEAM_BLUE, desired_blue),
+        (PLAYER_TEAM_RED, desired_red),
+    ] {
+        let slots: Vec<_> = (0..max)
+            .filter(|&slot| {
+                game.players[slot]
+                    .as_ref()
+                    .is_some_and(|player| player.is_bot && player.team_id == team)
+            })
+            .collect();
+        for slot in slots.into_iter().skip(desired) {
+            game.remove_bot(slot);
+        }
+    }
+
+    let current_blue = game
+        .players
+        .iter()
+        .flatten()
+        .filter(|player| player.is_bot && player.team_id == PLAYER_TEAM_BLUE)
+        .count();
+    let current_red = game
+        .players
+        .iter()
+        .flatten()
+        .filter(|player| player.is_bot && player.team_id == PLAYER_TEAM_RED)
+        .count();
+    let teams = std::iter::repeat_n(PLAYER_TEAM_BLUE, desired_blue - current_blue).chain(
+        std::iter::repeat_n(PLAYER_TEAM_RED, desired_red - current_red),
+    );
+    for team in teams {
         let Some(slot) = (0..max).find(|&slot| game.players[slot].is_none()) else {
             break;
         };
-        game.add_bot(slot, team, roster);
+        game.add_bot(slot, team, slot);
     }
 }
 
@@ -2254,6 +2273,46 @@ mod tests {
             12
         );
         assert_eq!(game.players.iter().flatten().count(), 12);
+    }
+
+    #[test]
+    fn roster_changes_preserve_unaffected_bots() {
+        let mut game = GameServer::new(crate::config::ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 16,
+            bot_count: 12,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        let before: Vec<_> = game
+            .players
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, player)| player.as_ref().map(|p| (slot, p.babonet_id)))
+            .collect();
+        game.players[12] = Some(Player::new(12, 42, "human".into()));
+
+        reconcile_bot_roster(&mut game);
+
+        let retained = before
+            .iter()
+            .filter(|(slot, babonet)| {
+                game.players[*slot]
+                    .as_ref()
+                    .is_some_and(|player| player.babonet_id == *babonet)
+            })
+            .count();
+        assert_eq!(retained, 11, "exactly one bot should leave for one human");
+        assert_eq!(
+            game.players.iter().flatten().filter(|p| p.is_bot).count(),
+            11
+        );
     }
 
     fn role_players(blue: usize, red: usize) -> [Option<Player>; MAX_PLAYER] {
