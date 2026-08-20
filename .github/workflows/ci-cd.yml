@@ -38,7 +38,7 @@ jobs:
           context: .
           file: server/Dockerfile
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           tags: zot.standouthost.com/standouthost/babo-dedicated-server:${{ github.ref_name }}
       - name: Update Argo CD image tag
         env:
@@ -46,10 +46,10 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           git clone "https://x-access-token:${RELEASE_TOKEN}@github.com/standouthost/clusters.git" clusters
-          sed -i "s/tag: v.*/tag: ${RELEASE_TAG}/" clusters/clusters/k3s.soh.re/applications/babo-dedicated-server.yaml
+          sed -i "s/tag: v.*/tag: ${RELEASE_TAG}/" clusters/clusters/k3s.soh.re/applications/babo-dedicated-server*.yaml
           cd clusters
           git config user.name "babo-dedicated-server-release"
           git config user.email "actions@users.noreply.github.com"
-          git add clusters/k3s.soh.re/applications/babo-dedicated-server.yaml
+          git add clusters/k3s.soh.re/applications/babo-dedicated-server*.yaml
           git diff --cached --quiet || git commit -m "chore(babo-dedicated-server): deploy ${RELEASE_TAG}"
           git push
