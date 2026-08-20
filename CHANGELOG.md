@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.2.2...v0.3.0) (2026-08-20)
+
+
+### Features
+
+* **voting:** add safe server vote handling ([3d50840](https://github.com/BaboViolent/babo-dedicated-server/commit/3d508401c1be6a1c0659a624ee4eac27788499e3))
+
 ## [0.2.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.2.1...v0.2.2) (2026-08-20)
 
 
