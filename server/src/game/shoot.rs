@@ -593,15 +593,7 @@ pub fn handle_player_shoot(game: &mut GameServer, shooter: usize, payload: &[u8]
         }
     }
 
-    let end = if weapon_id != WEAPON_FLAME_THROWER && blocker_id >= 0 && best_t < f32::MAX {
-        [
-            p1[0] + (p2[0] - p1[0]) * best_t,
-            p1[1] + (p2[1] - p1[1]) * best_t,
-            p1[2] + (p2[2] - p1[2]) * best_t,
-        ]
-    } else {
-        wall_end
-    };
+    let end = visual_shot_endpoint(weapon_id, p1, p2, wall_end, blocker_id, best_t);
 
     tracing::debug!("shoot broadcast: shooter={shooter} weapon={weapon_id} hit_player={hit_id}");
     let mut out = vec![0u8; 20];
@@ -619,6 +611,28 @@ pub fn handle_player_shoot(game: &mut GameServer, shooter: usize, payload: &[u8]
     out[17] = (normal[1] * 120.0) as i8 as u8;
     out[18] = (normal[2] * 120.0) as i8 as u8;
     game.broadcast(packet::encode_frame(ids::NET_SVCL_PLAYER_SHOOT, &out));
+}
+
+fn visual_shot_endpoint(
+    weapon_id: i8,
+    p1: [f32; 3],
+    p2: [f32; 3],
+    wall_end: [f32; 3],
+    blocker_id: i8,
+    best_t: f32,
+) -> [f32; 3] {
+    if weapon_id != WEAPON_FLAME_THROWER
+        && weapon_id != WEAPON_PHOTON_RIFLE
+        && blocker_id >= 0
+        && best_t < f32::MAX
+    {
+        return [
+            p1[0] + (p2[0] - p1[0]) * best_t,
+            p1[1] + (p2[1] - p1[1]) * best_t,
+            p1[2] + (p2[2] - p1[2]) * best_t,
+        ];
+    }
+    wall_end
 }
 
 fn can_damage(game_type: i8, shooter: usize, target: usize, game: &GameServer) -> bool {
@@ -1330,6 +1344,22 @@ mod tests {
 
         assert_eq!(game.players[1].as_ref().unwrap().life, 1.0);
         assert_eq!(game.players[2].as_ref().unwrap().life, 1.0);
+    }
+
+    #[test]
+    fn photon_visual_continues_through_player_to_wall() {
+        let from = [1.0, 2.0, 0.25];
+        let aimed = [9.0, 2.0, 0.25];
+        let wall = [7.0, 2.0, 0.25];
+
+        assert_eq!(
+            visual_shot_endpoint(WEAPON_PHOTON_RIFLE, from, aimed, wall, 1, 0.25),
+            wall
+        );
+        assert_eq!(
+            visual_shot_endpoint(WEAPON_SMG, from, aimed, wall, 1, 0.25),
+            [3.0, 2.0, 0.25]
+        );
     }
 
     #[test]
