@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.8](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.7...v0.4.8) (2026-08-20)
+
+
+### Bug Fixes
+
+* **molotov:** match native flame scatter ([11a773f](https://github.com/BaboViolent/babo-dedicated-server/commit/11a773fbaa82ffd5b6ca19c62fedf691295ff1f6))
+
 ## [0.4.7](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.6...v0.4.7) (2026-08-20)
 
 
