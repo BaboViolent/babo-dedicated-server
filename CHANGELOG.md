@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.6](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.5...v0.4.6) (2026-08-20)
+
+
+### Bug Fixes
+
+* **hitscan:** let teammates block direct fire ([6da4a84](https://github.com/BaboViolent/babo-dedicated-server/commit/6da4a8416c9d1bf0a2ba3cccb17093187370603c))
+
 ## [0.4.5](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.4...v0.4.5) (2026-08-20)
 
 
