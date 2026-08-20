@@ -1207,6 +1207,21 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
                 && p.bot_brain.target_visible_for >= BOT_TARGET_ACQUIRE_TIME)
                 .then_some((target, distance))
         });
+        // Outside CTF objectives, pursue the nearest living enemy even when
+        // they are not yet visible. Local wandering can strand opposing teams
+        // in separate rooms indefinitely on partitioned maps such as DM-Fort.
+        let hunt_target = (0..MAX_PLAYER)
+            .filter(|&other| other != slot)
+            .filter_map(|other| {
+                let position = live_positions[other]?;
+                let team = teams[other]?;
+                bot_can_damage(game_type, my_team, team).then_some((other, position))
+            })
+            .min_by(|(_, a), (_, b)| {
+                (a[0] - my_pos[0])
+                    .hypot(a[1] - my_pos[1])
+                    .total_cmp(&(b[0] - my_pos[0]).hypot(b[1] - my_pos[1]))
+            });
 
         let (desired_state, state_reason, urgent, utilities) = desired_tactical_state(
             slot,
@@ -1372,6 +1387,8 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
                 [tp[0], tp[1]]
             } else if p.bot_brain.enemy_memory_remaining > 0.0 {
                 p.bot_brain.last_known_enemy
+            } else if let Some((_, target)) = hunt_target {
+                [target[0], target[1]]
             } else {
                 wander_goal(p.bot_wander_angle, my_pos)
             };

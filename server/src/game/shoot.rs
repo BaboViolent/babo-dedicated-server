@@ -738,6 +738,14 @@ fn apply_damage_from(
                 }
             }
             broadcast_enum(game, attacker);
+            game.broadcast(packet::server_info(
+                &game.config.map_name,
+                game.config.game_type,
+                game.blue_score,
+                game.red_score,
+                game.blue_win,
+                game.red_win,
+            ));
         }
         broadcast_enum(game, victim);
     }
