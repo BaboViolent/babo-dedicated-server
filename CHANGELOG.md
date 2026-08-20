@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.0...v0.4.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **server:** broadcast team change state ([a142446](https://github.com/BaboViolent/babo-dedicated-server/commit/a1424461ae419b5ac0a4792f5f4d7cabf9b92c9d))
+
 ## [0.4.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.3.3...v0.4.0) (2026-08-20)
 
 
