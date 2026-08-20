@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.11](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.10...v0.4.11) (2026-08-20)
+
+
+### Bug Fixes
+
+* **photon:** broadcast beam through struck players ([c733c7e](https://github.com/BaboViolent/babo-dedicated-server/commit/c733c7ea0ff8830325aede123d685809157bffbe))
+
 ## [0.4.10](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.9...v0.4.10) (2026-08-20)
 
 
