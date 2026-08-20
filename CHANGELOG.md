@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.3.1...v0.3.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **bots:** replace bots as humans join ([caaa6ee](https://github.com/BaboViolent/babo-dedicated-server/commit/caaa6ee1be54df79e208ebe6d1ebfcdeb53f6911))
+
 ## [0.3.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.3.0...v0.3.1) (2026-08-20)
 
 
