@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.7](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.6...v0.4.7) (2026-08-20)
+
+
+### Bug Fixes
+
+* **network:** broadcast authoritative flame attachments ([1363bab](https://github.com/BaboViolent/babo-dedicated-server/commit/1363bab61d8c3e6dff6d29f575aa622c3b3cd30b))
+
 ## [0.4.6](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.5...v0.4.6) (2026-08-20)
 
 
