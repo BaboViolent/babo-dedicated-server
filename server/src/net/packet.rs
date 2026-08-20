@@ -91,11 +91,15 @@ pub fn map_change(map_name: &str, game_type: i8) -> Vec<u8> {
     encode_frame(ids::NET_SVCL_MAP_CHANGE, &p)
 }
 
-pub fn change_flag_state(flag_id: i8, new_state: i8, player_id: i8) -> Vec<u8> {
-    let mut p = [0u8; 3];
+pub fn change_flag_state(flag_id: i8, new_state: i8, player_id: i8, action: u8) -> Vec<u8> {
+    // The original three fields remain in place for legacy clients. Modern
+    // clients consume the appended action instead of inferring return versus
+    // capture from potentially stale local state.
+    let mut p = [0u8; 4];
     p[0] = flag_id as u8;
     p[1] = new_state as u8;
     p[2] = player_id as u8;
+    p[3] = action;
     encode_frame(ids::NET_SVCL_CHANGE_FLAG_STATE, &p)
 }
 

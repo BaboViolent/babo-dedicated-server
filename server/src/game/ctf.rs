@@ -20,6 +20,9 @@ const BLUE_DROP_RETURN_RADIUS: f32 = 0.5;
 const RED_DROP_TAKE_RADIUS: f32 = 0.25;
 const RED_DROP_RETURN_RADIUS: f32 = 0.25;
 const DROPPED_FLAG_AUTO_RETURN: f32 = 20.0;
+const FLAG_ACTION_TAKE: u8 = 1;
+const FLAG_ACTION_RETURN: u8 = 2;
+const FLAG_ACTION_CAPTURE: u8 = 3;
 
 #[derive(Debug, Clone)]
 pub struct CtfState {
@@ -185,7 +188,7 @@ fn take_flag(game: &mut GameServer, flag_id: usize, slot: usize) {
         p.flag_attempts += 1;
     }
     log_flag_transition(game, "take", flag_id, slot, previous_state);
-    broadcast_change_flag(game, flag_id as i8, slot as i8, slot);
+    broadcast_change_flag(game, flag_id as i8, slot as i8, slot, FLAG_ACTION_TAKE);
     broadcast_enum(game, slot);
 }
 
@@ -198,7 +201,7 @@ fn return_flag(game: &mut GameServer, flag_id: usize, slot: usize) {
         p.returns += 1;
     }
     log_flag_transition(game, "return", flag_id, slot, previous_state);
-    broadcast_change_flag(game, flag_id as i8, FLAG_AT_POD, slot);
+    broadcast_change_flag(game, flag_id as i8, FLAG_AT_POD, slot, FLAG_ACTION_RETURN);
     broadcast_enum(game, slot);
 }
 
@@ -211,13 +214,13 @@ fn capture(game: &mut GameServer, slot: usize, team: i8) {
         game.ctf.flag_pos[1] = game.ctf.flag_pod[1];
         game.blue_win += 1;
         game.blue_score = game.blue_win;
-        broadcast_change_flag(game, 1, FLAG_AT_POD, slot);
+        broadcast_change_flag(game, 1, FLAG_AT_POD, slot, FLAG_ACTION_CAPTURE);
     } else {
         game.ctf.flag_state[0] = FLAG_AT_POD;
         game.ctf.flag_pos[0] = game.ctf.flag_pod[0];
         game.red_win += 1;
         game.red_score = game.red_win;
-        broadcast_change_flag(game, 0, FLAG_AT_POD, slot);
+        broadcast_change_flag(game, 0, FLAG_AT_POD, slot, FLAG_ACTION_CAPTURE);
     }
     if let Some(p) = game.players[slot].as_mut() {
         p.score += 1;
@@ -502,11 +505,18 @@ fn log_flag_transition(
     );
 }
 
-fn broadcast_change_flag(game: &GameServer, flag_id: i8, new_state: i8, player_id: usize) {
+fn broadcast_change_flag(
+    game: &GameServer,
+    flag_id: i8,
+    new_state: i8,
+    player_id: usize,
+    action: u8,
+) {
     game.broadcast(packet::change_flag_state(
         flag_id,
         new_state,
         player_id as i8,
+        action,
     ));
 }
 
