@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.3.0...v0.3.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **server:** expose live scoreboard and stable ping ([379e7fd](https://github.com/BaboViolent/babo-dedicated-server/commit/379e7fda3411b30f0fc967effbbc21debdc9179f))
+
 ## [0.3.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.2.2...v0.3.0) (2026-08-20)
 
 
