@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.10](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.9...v0.4.10) (2026-08-20)
+
+
+### Bug Fixes
+
+* **molotov:** enforce outward scatter regression ([5ec13f5](https://github.com/BaboViolent/babo-dedicated-server/commit/5ec13f5d4c5080b4f03a6749fba12dbd3e392125))
+
 ## [0.4.9](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.8...v0.4.9) (2026-08-20)
 
 
