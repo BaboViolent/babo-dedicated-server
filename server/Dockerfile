@@ -1,17 +1,36 @@
-FROM rust:1-bookworm AS builder
+FROM --platform=$BUILDPLATFORM rust:1-bookworm AS builder
+ARG TARGETARCH
 WORKDIR /build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 COPY server/Cargo.toml server/Cargo.lock* ./
-RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
+RUN case "$TARGETARCH" in \
+      amd64) target=x86_64-unknown-linux-gnu ;; \
+      arm64) target=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && mkdir src \
+    && echo 'fn main() {}' > src/main.rs \
+    && cargo build --release --target "$target" \
+    && rm -rf src
 COPY server/src ./src
-RUN touch src/main.rs && cargo build --release
+RUN case "$TARGETARCH" in \
+      amd64) target=x86_64-unknown-linux-gnu ;; \
+      arm64) target=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && touch src/main.rs \
+    && cargo build --release --target "$target" \
+    && cp "target/$target/release/bv2-server" /tmp/bv2-server
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /build/target/release/bv2-server /usr/local/bin/bv2-server
+COPY --from=builder /tmp/bv2-server /usr/local/bin/bv2-server
 COPY Content/main/maps /app/Content/main/maps
 ENV BV2_BIND=0.0.0.0:8080
 ENV BV2_CONTENT_ROOT=/app/Content/main
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=3s CMD curl -f http://127.0.0.1:8080/health || exit 1
-USER nobody
+USER 65534:65534
 ENTRYPOINT ["/usr/local/bin/bv2-server"]
