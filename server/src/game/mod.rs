@@ -949,6 +949,8 @@ impl GameServer {
                     payload,
                 ));
                 if changed_team {
+                    tracing::info!(player = pid, team, "player changed team");
+                    shoot::broadcast_enum(self, pid);
                     reconcile_bot_roster(self);
                 }
             }
