@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.1...v0.4.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **server:** publish death diagnostics ([47e4eaa](https://github.com/BaboViolent/babo-dedicated-server/commit/47e4eaac00d1999dc92235533ae3361ddb3338bd))
+
 ## [0.4.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.0...v0.4.1) (2026-08-20)
 
 
