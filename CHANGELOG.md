@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.3.2...v0.3.3) (2026-08-20)
+
+
+### Bug Fixes
+
+* **bots:** preserve roster across human joins ([7c7713a](https://github.com/BaboViolent/babo-dedicated-server/commit/7c7713a98dc796030aa2786dc67915f289a7fad8))
+
 ## [0.3.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.3.1...v0.3.2) (2026-08-20)
 
 
