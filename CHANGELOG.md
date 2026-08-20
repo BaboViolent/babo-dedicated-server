@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.9](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.8...v0.4.9) (2026-08-20)
+
+
+### Bug Fixes
+
+* **molotov:** separate scattered flame from impact patch ([78c9654](https://github.com/BaboViolent/babo-dedicated-server/commit/78c96548257dfe6e220a463f9e5fbd6cbb0ca629))
+
 ## [0.4.8](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.7...v0.4.8) (2026-08-20)
 
 
