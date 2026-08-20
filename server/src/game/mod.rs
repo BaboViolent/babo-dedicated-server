@@ -684,6 +684,13 @@ impl GameServer {
             ctf::tick_ctf(self, dt);
             snd::tick_snd(self);
         }
+        // Transition packets provide immediate feedback; this compact snapshot
+        // periodically repairs any client that joined or loaded a map across a
+        // transition boundary. WebSocket ordering makes the latest snapshot
+        // authoritative without requiring a second flag-state protocol.
+        if self.frame_id.rem_euclid(60) == 0 {
+            ctf::broadcast_flag_snapshot(self);
+        }
         ctf::tick_match_lifecycle(self, dt);
         voting::tick_vote(self, dt);
 
@@ -1600,7 +1607,18 @@ fn sanitize_chat_text(text: &str) -> String {
 }
 
 fn sanitize_player_name(text: &str) -> String {
-    let clean = sanitize_chat_text(text);
+    // BV2 names intentionally use control characters 1..=9 as inline colour
+    // markers and code points 128..=159 for the game's legacy glyph page.
+    // Preserve those protocol values while rejecting unrelated controls.
+    let clean = text
+        .chars()
+        .filter(|ch| {
+            let code = *ch as u32;
+            !ch.is_control() || (1..=9).contains(&code) || (128..=159).contains(&code)
+        })
+        .collect::<String>()
+        .trim()
+        .to_string();
     truncate_utf8_bytes(&clean, 31).to_string()
 }
 
@@ -1677,6 +1695,13 @@ mod movement_authority_tests {
         write_name31(&mut wire, &crossing);
         assert_eq!(&wire[..30], "a".repeat(30).as_bytes());
         assert_eq!(wire[30], 0);
+    }
+
+    #[test]
+    fn player_names_preserve_colour_markers_and_legacy_alt_glyphs() {
+        let name = "\u{3}Red \u{9b} King";
+        assert_eq!(sanitize_player_name(name), name);
+        assert_eq!(sanitize_player_name("A\nB\u{b}C"), "ABC");
     }
 
     #[test]

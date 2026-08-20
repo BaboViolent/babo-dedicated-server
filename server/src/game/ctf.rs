@@ -533,11 +533,18 @@ pub fn send_flag_enum_to(game: &GameServer, babonet_id: u32) {
     );
 }
 
-fn broadcast_flag_enum(game: &GameServer) {
+pub(crate) fn broadcast_flag_snapshot(game: &GameServer) {
+    if game.config.game_type != GAME_TYPE_CTF || !game.ctf.supports_ctf() {
+        return;
+    }
     game.broadcast(packet::encode_frame(
         ids::NET_SVCL_FLAG_ENUM,
         &flag_enum_bytes(game),
     ));
+}
+
+fn broadcast_flag_enum(game: &GameServer) {
+    broadcast_flag_snapshot(game);
 }
 
 #[cfg(test)]
