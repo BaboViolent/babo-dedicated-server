@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.2.1...v0.2.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **network:** report accurate scoreboard ping ([130d0c0](https://github.com/BaboViolent/babo-dedicated-server/commit/130d0c05ed50110c9e67d89146419f7be4700da0))
+
 ## [0.2.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.2.0...v0.2.1) (2026-08-20)
 
 
