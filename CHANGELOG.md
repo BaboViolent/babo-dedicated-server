@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.5](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.4...v0.4.5) (2026-08-20)
+
+
+### Bug Fixes
+
+* **ctf:** identify flag transition actions explicitly ([8dd4e53](https://github.com/BaboViolent/babo-dedicated-server/commit/8dd4e534591fa3a0a10fe78c8d277a813b744d78))
+
 ## [0.4.4](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.3...v0.4.4) (2026-08-20)
 
 
