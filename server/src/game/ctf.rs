@@ -425,6 +425,7 @@ fn log_flag_transition(
         .unwrap_or("unknown");
     let team = actor.map(|player| player.team_id).unwrap_or(-1);
     let bot = actor.is_some_and(|player| player.is_bot);
+    let actor_position = actor.map(|player| player.cf.position).unwrap_or([0.0; 3]);
     let position = game.ctf.flag_pos[flag_id];
     tracing::info!(
         target: "bv2_server::ctf",
@@ -435,6 +436,8 @@ fn log_flag_transition(
         actor_name = name,
         actor_team = team,
         actor_bot = bot,
+        actor_x = actor_position[0],
+        actor_y = actor_position[1],
         previous_state,
         new_state = game.ctf.flag_state[flag_id],
         x = position[0],
