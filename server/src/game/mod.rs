@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
@@ -59,6 +59,10 @@ fn valid_player_team(team: i8) -> bool {
     )
 }
 
+fn duration_ms_i16(duration: Duration) -> i16 {
+    duration.as_millis().min(i16::MAX as u128) as i16
+}
+
 /// GameVar.cpp sv_timeToSpawn — seconds before dead players may spawn.
 pub const SV_TIME_TO_SPAWN: f32 = 5.0;
 pub const SPAWN_IMMUNITY_TIME: f32 = 2.0;
@@ -114,7 +118,8 @@ pub struct Player {
     pub dmg: f32,
     pub cf: CoordFrame,
     pub wait_for_pong: bool,
-    pub ping_frames: i32,
+    pub ping_cycle_started: Instant,
+    pub ping_sent_at: Option<Instant>,
     pub ping_ms: i16,
     pub handshake_done: bool,
     pub spawned_once: bool,
@@ -182,7 +187,8 @@ impl Player {
             dmg: 0.0,
             cf: CoordFrame::default(),
             wait_for_pong: false,
-            ping_frames: 0,
+            ping_cycle_started: Instant::now(),
+            ping_sent_at: None,
             ping_ms: 33,
             handshake_done: false,
             spawned_once: false,
@@ -628,7 +634,9 @@ impl GameServer {
                 if player.status == PLAYER_STATUS_DEAD && !player.spawned_once {
                     continue;
                 }
-                if !player.wait_for_pong && player.ping_frames >= 30 {
+                if !player.wait_for_pong
+                    && player.ping_cycle_started.elapsed() >= Duration::from_secs(1)
+                {
                     Some((player.babonet_id, slot as i8))
                 } else {
                     None
@@ -636,8 +644,8 @@ impl GameServer {
             };
             if let Some((bid, pid)) = ping_to_send {
                 if let Some(p) = self.players[slot].as_mut() {
-                    p.ping_frames = 0;
                     p.wait_for_pong = true;
+                    p.ping_sent_at = Some(Instant::now());
                 }
                 self.send_to(bid, packet::ping(pid));
             }
@@ -652,13 +660,17 @@ impl GameServer {
                 if player.status == PLAYER_STATUS_DEAD && !player.spawned_once {
                     continue;
                 }
-                if player.wait_for_pong && player.ping_frames > 300 {
+                let pong_wait = player.ping_sent_at.map(|sent| sent.elapsed());
+                if player.wait_for_pong
+                    && pong_wait.is_some_and(|wait| wait > Duration::from_secs(6))
+                {
                     Some(player.babonet_id)
                 } else {
-                    if player.wait_for_pong && player.ping_frames > 30 {
-                        player.ping_ms = player.ping_frames as i16;
+                    if player.wait_for_pong {
+                        if let Some(wait) = pong_wait {
+                            player.ping_ms = duration_ms_i16(wait);
+                        }
                     }
-                    player.ping_frames += 1;
                     None
                 }
             };
@@ -752,8 +764,10 @@ impl GameServer {
                 if let Some(p) = self.players.get_mut(pid).and_then(Option::as_mut) {
                     if p.babonet_id == babonet_id {
                         p.wait_for_pong = false;
-                        p.ping_ms = p.ping_frames as i16;
-                        p.ping_frames = 0;
+                        if let Some(sent) = p.ping_sent_at.take() {
+                            p.ping_ms = duration_ms_i16(sent.elapsed());
+                        }
+                        p.ping_cycle_started = Instant::now();
                     }
                 }
             }
@@ -776,7 +790,8 @@ impl GameServer {
                     return;
                 }
                 p.wait_for_pong = false;
-                p.ping_frames = 0;
+                p.ping_sent_at = None;
+                p.ping_cycle_started = Instant::now();
                 p.handshake_done = true;
                 p.status = PLAYER_STATUS_DEAD;
 
@@ -1054,7 +1069,6 @@ impl GameServer {
                 p.cf.mouse[0] = packet::read_i16(payload, 14).unwrap_or(0) as f32 / ids::WIRE_POS;
                 p.cf.mouse[1] = packet::read_i16(payload, 16).unwrap_or(0) as f32 / ids::WIRE_POS;
                 p.cf.mouse[2] = packet::read_i16(payload, 18).unwrap_or(0) as f32 / ids::WIRE_POS;
-                p.ping_frames = 0;
                 p.coord_elapsed = 0.0;
 
                 let relay = build_coord_frame(pid as i8, p.babonet_id as i32, &p.cf);
@@ -1334,12 +1348,13 @@ fn write_ip16(buf: &mut [u8], ip: &str) {
 #[cfg(test)]
 mod movement_authority_tests {
     use super::{
-        bound_client_movement, is_advertised_map, map_allowed_for_game_type, valid_player_team,
-        wire_player_slot, GameServer, Player, GAME_TYPE_CTF, GAME_TYPE_SND, PLAYER_TEAM_BLUE,
-        PLAYER_TEAM_RED,
+        bound_client_movement, duration_ms_i16, is_advertised_map, map_allowed_for_game_type,
+        valid_player_team, wire_player_slot, GameServer, Player, GAME_TYPE_CTF, GAME_TYPE_SND,
+        PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
     };
     use crate::config::ServerConfig;
     use crate::map::MapGrid;
+    use std::time::Duration;
 
     fn map() -> MapGrid {
         MapGrid::fixture(10, &[])
@@ -1379,6 +1394,12 @@ mod movement_authority_tests {
         assert!(!valid_player_team(-2));
         assert!(!valid_player_team(2));
         assert!(!valid_player_team(127));
+    }
+
+    #[test]
+    fn scoreboard_ping_is_encoded_as_elapsed_milliseconds() {
+        assert_eq!(duration_ms_i16(Duration::from_millis(42)), 42);
+        assert_eq!(duration_ms_i16(Duration::from_secs(60)), i16::MAX);
     }
 
     #[test]
