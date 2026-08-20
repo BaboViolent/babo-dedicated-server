@@ -302,7 +302,11 @@ pub fn handle_spawn_intent(game: &mut GameServer, shooter: usize, payload: &[u8]
             false
         };
         if ready_for_remote {
-            if let Some(position) = take_remote_detonation(game, shooter) {
+            if let Some((unique_id, position)) = take_remote_detonation(game, shooter) {
+                game.broadcast(packet::encode_frame(
+                    ids::NET_SVCL_DELETE_PROJECTILE,
+                    &unique_id.to_le_bytes(),
+                ));
                 shoot::handle_explosion(
                     game,
                     position,
@@ -378,12 +382,13 @@ pub fn bot_fire_rocket(game: &mut GameServer, shooter: usize, target: [f32; 2]) 
     bot_throw(game, shooter, target, 5, ROCKET);
 }
 
-fn take_remote_detonation(game: &mut GameServer, owner: usize) -> Option<[f32; 3]> {
+fn take_remote_detonation(game: &mut GameServer, owner: usize) -> Option<(i32, [f32; 3])> {
     let index = game
         .projectiles
         .iter()
         .position(|p| p.owner == owner && p.kind == ROCKET && p.duration > 0.0)?;
-    Some(game.projectiles.remove(index).position)
+    let projectile = game.projectiles.remove(index);
+    Some((projectile.unique_id, projectile.position))
 }
 
 fn clamp_nearby_muzzle_origin(
@@ -904,6 +909,31 @@ mod tests {
             p.integrate(0.02);
         }
         assert!(p.duration <= 0.001);
+    }
+
+    #[test]
+    fn remote_detonation_returns_the_removed_rocket_identity() {
+        let config = ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: PathBuf::from("../Content/main"),
+            map_name: "CTF-BurialMound".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: 0,
+            max_players: 2,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 15.0 * 60.0,
+        };
+        let mut game = GameServer::new(config);
+        let position = [3.0, 4.0, 0.25];
+        let mut rocket = ServerProjectile::moving(42, 0, 5, ROCKET, position, [1.0, 0.0, 0.0]);
+        rocket.duration = 9.5;
+        game.projectiles.push(rocket);
+
+        assert_eq!(take_remote_detonation(&mut game, 0), Some((42, position)));
+        assert!(game.projectiles.is_empty());
     }
 
     #[test]
