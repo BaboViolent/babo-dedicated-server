@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.3...v0.4.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* **ctf:** reconcile flags and preserve legacy names ([b63ee27](https://github.com/BaboViolent/babo-dedicated-server/commit/b63ee27f8ee70caf1985112ea0e0df5badff0ccc))
+
 ## [0.4.3](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.2...v0.4.3) (2026-08-20)
 
 
