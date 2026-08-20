@@ -441,6 +441,7 @@ impl GameServer {
                 let pid = slot as i8;
                 self.broadcast(packet::newplayer(pid, babonet_id as i32));
                 self.send_to(babonet_id, packet::gameversion());
+                reconcile_bot_roster(self);
                 tracing::info!("player slot {slot} babonet {babonet_id}");
                 return Some(slot);
             }

@@ -2069,8 +2069,9 @@ impl GameServer {
     }
 }
 
-/// Reserve one connection for the next human and use bots only as equal-team
-/// fillers. Rebuilding on human roster changes also guarantees stale bots leave.
+/// Treat BV2_BOTS as a target population: every connected human replaces one
+/// bot until no bots remain. Rebuilding on human roster changes guarantees a
+/// departed human is replaced and team totals stay as even as possible.
 pub fn reconcile_bot_roster(game: &mut GameServer) {
     if game.config.bot_count == 0 {
         return;
@@ -2102,20 +2103,16 @@ pub fn reconcile_bot_roster(game: &mut GameServer) {
     let capacity = game
         .config
         .bot_count
-        .min(max.saturating_sub(human_count).saturating_sub(1));
+        .saturating_sub(human_count)
+        .min(max.saturating_sub(human_count));
     let (mut desired_blue, mut desired_red) = (0usize, 0usize);
     while desired_blue + desired_red < capacity {
         let blue_total = human_blue + desired_blue;
         let red_total = human_red + desired_red;
-        if blue_total < red_total {
+        if blue_total <= red_total {
             desired_blue += 1;
-        } else if red_total < blue_total {
-            desired_red += 1;
-        } else if desired_blue + desired_red + 2 <= capacity {
-            desired_blue += 1;
-            desired_red += 1;
         } else {
-            break;
+            desired_red += 1;
         }
     }
     let teams = std::iter::repeat_n(PLAYER_TEAM_BLUE, desired_blue)
@@ -2133,7 +2130,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn human_roster_change_rebuilds_equal_teams_and_reserves_a_slot() {
+    fn human_replaces_one_bot_and_keeps_six_vs_six() {
         let mut game = GameServer::new(crate::config::ServerConfig {
             bind_addr: "127.0.0.1:0".into(),
             content_root: std::path::PathBuf::from("../Content/main"),
@@ -2141,8 +2138,8 @@ mod tests {
             game_name: "test".into(),
             password: String::new(),
             game_type: GAME_TYPE_CTF,
-            max_players: 8,
-            bot_count: 6,
+            max_players: 16,
+            bot_count: 12,
             score_limit: 50,
             win_limit: 7,
             game_time_limit: 900.0,
@@ -2173,18 +2170,90 @@ mod tests {
             .flatten()
             .filter(|p| p.team_id == PLAYER_TEAM_RED)
             .count();
-        let occupied = game.players.iter().take(8).filter(|p| p.is_some()).count();
+        let bots = game.players.iter().flatten().filter(|p| p.is_bot).count();
+        let occupied = game.players.iter().filter(|p| p.is_some()).count();
         assert_eq!(blue, red);
-        assert!(
-            occupied <= 7,
-            "one of eight slots must remain available to a human"
-        );
+        assert_eq!(blue, 6);
+        assert_eq!(red, 6);
+        assert_eq!(bots, 11);
+        assert_eq!(occupied, 12);
         assert!(game
             .players
             .iter()
             .flatten()
             .filter(|p| p.is_bot)
             .all(|p| p.name.ends_with(" [bot]")));
+    }
+
+    #[test]
+    fn sixteen_humans_displace_every_bot() {
+        let mut game = GameServer::new(crate::config::ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 16,
+            bot_count: 12,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        game.players = std::array::from_fn(|slot| {
+            (slot < 16).then(|| {
+                let mut human = Player::new(slot, slot as u32 + 1, "human".into());
+                human.team_id = if slot % 2 == 0 {
+                    PLAYER_TEAM_BLUE
+                } else {
+                    PLAYER_TEAM_RED
+                };
+                human
+            })
+        });
+
+        reconcile_bot_roster(&mut game);
+
+        assert_eq!(
+            game.players.iter().flatten().filter(|p| p.is_bot).count(),
+            0
+        );
+        assert_eq!(game.players.iter().flatten().count(), 16);
+    }
+
+    #[test]
+    fn departing_human_is_replaced_until_target_population_is_restored() {
+        let mut game = GameServer::new(crate::config::ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 16,
+            bot_count: 12,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        game.players[0] = None;
+        let mut human = Player::new(0, 99, "human".into());
+        human.team_id = PLAYER_TEAM_BLUE;
+        game.players[0] = Some(human);
+        reconcile_bot_roster(&mut game);
+        assert_eq!(
+            game.players.iter().flatten().filter(|p| p.is_bot).count(),
+            11
+        );
+
+        game.players[0] = None;
+        reconcile_bot_roster(&mut game);
+
+        assert_eq!(
+            game.players.iter().flatten().filter(|p| p.is_bot).count(),
+            12
+        );
+        assert_eq!(game.players.iter().flatten().count(), 12);
     }
 
     fn role_players(blue: usize, red: usize) -> [Option<Player>; MAX_PLAYER] {
