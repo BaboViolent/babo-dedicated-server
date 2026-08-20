@@ -613,11 +613,11 @@ pub fn tick_projectiles(game: &mut GameServer, dt: f32) {
             events.push(Event::Flames {
                 position: hit_player.map(|(_, p)| p).unwrap_or(wall_point),
                 normal,
-                scatter_vel: if hit_wall {
-                    reflect(projectile.velocity, normal)
-                } else {
-                    reflect(projectile.velocity, [0.0, 0.0, 1.0])
-                },
+                // GameProjectile.cpp reflects currentCF.vel exactly once when
+                // constructing the moving flame. Pass the incoming impact
+                // velocity through here; reflecting it both here and in
+                // spawn_flames sends the patch back into the impact surface.
+                scatter_vel: projectile.velocity,
                 owner: projectile.owner,
             });
             deleted.push(projectile.unique_id);
@@ -857,6 +857,16 @@ mod tests {
         let flame = ServerProjectile::flame(1, 0, [4.0, 5.0, 1.25], [0.0, 0.0, 0.0], false);
         assert_eq!(flame.position, [4.0, 5.0, 1.25]);
         assert_eq!(flame.duration, 10.0);
+    }
+
+    #[test]
+    fn molotov_scatter_reflects_incoming_velocity_once() {
+        let incoming = [3.0, 1.0, -2.0];
+        let floor_normal = [0.0, 0.0, 1.0];
+        let scatter = reflect(incoming.map(|v| v * 0.5), floor_normal);
+
+        assert_eq!(scatter, [1.5, 0.5, 1.0]);
+        assert!(scatter[2] > 0.0, "moving flame must leave the impact surface");
     }
 
     #[test]
