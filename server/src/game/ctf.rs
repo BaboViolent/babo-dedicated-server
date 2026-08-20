@@ -152,20 +152,24 @@ fn tick_red_flag(game: &mut GameServer, slot: usize, team: i8, pos: [f32; 3]) {
 }
 
 fn take_flag(game: &mut GameServer, flag_id: usize, slot: usize) {
+    let previous_state = game.ctf.flag_state[flag_id];
     game.ctf.flag_state[flag_id] = slot as i8;
     if let Some(p) = game.players[slot].as_mut() {
         p.flag_attempts += 1;
     }
+    log_flag_transition(game, "take", flag_id, slot, previous_state);
     broadcast_change_flag(game, flag_id as i8, slot as i8, slot);
     broadcast_enum(game, slot);
 }
 
 fn return_flag(game: &mut GameServer, flag_id: usize, slot: usize) {
+    let previous_state = game.ctf.flag_state[flag_id];
     game.ctf.flag_state[flag_id] = FLAG_AT_POD;
     game.ctf.flag_pos[flag_id] = game.ctf.flag_pod[flag_id];
     if let Some(p) = game.players[slot].as_mut() {
         p.returns += 1;
     }
+    log_flag_transition(game, "return", flag_id, slot, previous_state);
     broadcast_change_flag(game, flag_id as i8, FLAG_AT_POD, slot);
     broadcast_enum(game, slot);
 }
@@ -190,6 +194,8 @@ fn capture(game: &mut GameServer, slot: usize, team: i8) {
     if let Some(p) = game.players[slot].as_mut() {
         p.score += 1;
     }
+    let flag_id = usize::from(team == PLAYER_TEAM_BLUE);
+    log_flag_transition(game, "capture", flag_id, slot, slot as i8);
     broadcast_enum(game, slot);
     finish_match_if_needed(game);
 }
@@ -401,8 +407,40 @@ pub fn drop_carrier_flags(game: &mut GameServer, slot: usize) {
             game.ctf.flag_pos[flag_id] = p.cf.position;
         }
         game.ctf.flag_state[flag_id] = FLAG_DROPPED;
+        log_flag_transition(game, "drop", flag_id, slot, slot as i8);
         game.broadcast(packet::drop_flag(flag_id as i8, game.ctf.flag_pos[flag_id]));
     }
+}
+
+fn log_flag_transition(
+    game: &GameServer,
+    action: &'static str,
+    flag_id: usize,
+    slot: usize,
+    previous_state: i8,
+) {
+    let actor = game.players.get(slot).and_then(Option::as_ref);
+    let name = actor
+        .map(|player| player.name.as_str())
+        .unwrap_or("unknown");
+    let team = actor.map(|player| player.team_id).unwrap_or(-1);
+    let bot = actor.is_some_and(|player| player.is_bot);
+    let position = game.ctf.flag_pos[flag_id];
+    tracing::info!(
+        target: "bv2_server::ctf",
+        action,
+        flag_id,
+        flag = if flag_id == 0 { "blue" } else { "red" },
+        actor_slot = slot,
+        actor_name = name,
+        actor_team = team,
+        actor_bot = bot,
+        previous_state,
+        new_state = game.ctf.flag_state[flag_id],
+        x = position[0],
+        y = position[1],
+        "flag transition"
+    );
 }
 
 fn broadcast_change_flag(game: &GameServer, flag_id: i8, new_state: i8, player_id: usize) {

@@ -169,6 +169,16 @@ struct InfoScore {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct InfoFlag {
+    id: usize,
+    name: &'static str,
+    state: i8,
+    position: [f32; 3],
+    pod: [f32; 3],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ServerInfo {
     name: String,
     map: String,
@@ -177,6 +187,7 @@ struct ServerInfo {
     max_players: usize,
     timer: InfoTimer,
     team_score: InfoScore,
+    flags: Vec<InfoFlag>,
     scoreboard: Vec<InfoPlayer>,
     recent_chat: Vec<crate::game::RecentChat>,
 }
@@ -219,6 +230,15 @@ fn server_info(game: &GameServer) -> ServerInfo {
             blue_wins: game.blue_win,
             red_wins: game.red_win,
         },
+        flags: (0..2)
+            .map(|id| InfoFlag {
+                id,
+                name: if id == 0 { "blue" } else { "red" },
+                state: game.ctf.flag_state[id],
+                position: game.ctf.flag_pos[id],
+                pod: game.ctf.flag_pod[id],
+            })
+            .collect(),
         scoreboard,
         recent_chat: game.recent_chat.iter().cloned().collect(),
     }
