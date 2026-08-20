@@ -112,6 +112,13 @@ pub fn drop_flag(flag_id: i8, position: [f32; 3]) -> Vec<u8> {
     encode_frame(ids::NET_SVCL_DROP_FLAG, &p)
 }
 
+pub fn flame_stick_to_player(projectile_id: i32, player_id: i8) -> Vec<u8> {
+    let mut p = [0u8; 5];
+    p[..4].copy_from_slice(&projectile_id.to_le_bytes());
+    p[4] = player_id as u8;
+    encode_frame(ids::NET_SVCL_FLAME_STICK_TO_PLAYER, &p)
+}
+
 pub fn player_disconnect(player_id: i8) -> Vec<u8> {
     encode_frame(ids::NET_SVCL_PLAYER_DISCONNECT, &[player_id as u8])
 }

@@ -241,6 +241,10 @@ enum Event {
         position: [f32; 3],
         owner: usize,
     },
+    FlameStick {
+        unique_id: i32,
+        player: i8,
+    },
     Pickup {
         unique_id: i32,
         player: usize,
@@ -419,6 +423,7 @@ pub fn tick_projectiles(game: &mut GameServer, dt: f32) {
         projectile.integrate(dt);
 
         if projectile.kind == FLAME {
+            let previous_stick = projectile.stick_to_player;
             if projectile.stick_to_player >= 0 {
                 if let Some(stick_player) = game
                     .players
@@ -507,6 +512,13 @@ pub fn tick_projectiles(game: &mut GameServer, dt: f32) {
                     projectile.stick_for = 3.0;
                     projectile.stick_to_player = slot;
                 }
+            }
+
+            if projectile.stick_to_player != previous_stick {
+                events.push(Event::FlameStick {
+                    unique_id: projectile.unique_id,
+                    player: projectile.stick_to_player,
+                });
             }
 
             if projectile.burn_clock >= FLAME_BURN_INTERVAL {
@@ -655,6 +667,9 @@ pub fn tick_projectiles(game: &mut GameServer, dt: f32) {
                 owner,
             } => spawn_flames(game, position, normal, scatter_vel, owner),
             Event::Burn { position, owner } => shoot::apply_server_burn(game, position, 0.5, owner),
+            Event::FlameStick { unique_id, player } => {
+                game.broadcast(packet::flame_stick_to_player(unique_id, player));
+            }
             Event::Pickup {
                 unique_id,
                 player,

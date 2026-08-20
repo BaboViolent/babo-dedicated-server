@@ -23,6 +23,7 @@ pub const NET_SVCL_FLAG_ENUM: u16 = 120;
 pub const NET_SVCL_GAME_STATE: u16 = 121;
 pub const NET_SVCL_MAP_CHANGE: u16 = 123;
 pub const NET_SVCL_PICKUP_ITEM: u16 = 124;
+pub const NET_SVCL_FLAME_STICK_TO_PLAYER: u16 = 125;
 pub const NET_SVCL_AUTOBALANCE: u16 = 128;
 pub const NET_SVCL_UPDATE_VOTE: u16 = 130;
 pub const NET_SVCL_VOTE_RESULT: u16 = 131;
