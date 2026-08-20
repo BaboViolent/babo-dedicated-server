@@ -715,13 +715,30 @@ fn spawn_flames(
     ));
     game.projectiles.push(base);
 
+    let scatter_random = |salt: u32| {
+        let mut value = (base_id as u32) ^ salt;
+        value ^= value >> 16;
+        value = value.wrapping_mul(0x7feb_352d);
+        value ^= value >> 15;
+        value = value.wrapping_mul(0x846c_a68b);
+        value ^= value >> 16;
+        value as f32 / u32::MAX as f32
+    };
     let scatter = {
         let v = speed(scatter_vel);
         if v > 0.001 {
+            let reflected = reflect(
+                [
+                    scatter_vel[0] * 0.5,
+                    scatter_vel[1] * 0.5,
+                    scatter_vel[2] * 0.5,
+                ],
+                normal,
+            );
             [
-                scatter_vel[0] + ((base_id as f32 * 97.0) % 2.0) - 1.0,
-                scatter_vel[1] + (((base_id + 31) as f32 * 97.0) % 2.0) - 1.0,
-                scatter_vel[2] + ((base_id as f32 * 53.0) % 1.0),
+                reflected[0] + scatter_random(0x41c6_4e6d) * 2.0 - 1.0,
+                reflected[1] + scatter_random(0x9e37_79b9) * 2.0 - 1.0,
+                reflected[2] + scatter_random(0xa511_e9b3),
             ]
         } else {
             reflect([0.0, 0.0, 1.0], normal)
