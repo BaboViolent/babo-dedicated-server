@@ -15,13 +15,18 @@ pub const FLAG_DROPPED: i8 = -1;
 const MATCH_END_DELAY: f32 = 10.0;
 
 const TAKE_RADIUS: f32 = 0.25;
-const DROP_RADIUS: f32 = 0.5;
+const BLUE_DROP_TAKE_RADIUS: f32 = 0.5;
+const BLUE_DROP_RETURN_RADIUS: f32 = 0.5;
+const RED_DROP_TAKE_RADIUS: f32 = 0.25;
+const RED_DROP_RETURN_RADIUS: f32 = 0.25;
+const DROPPED_FLAG_AUTO_RETURN: f32 = 20.0;
 
 #[derive(Debug, Clone)]
 pub struct CtfState {
     pub flag_state: [i8; 2],
     pub flag_pos: [[f32; 3]; 2],
     pub flag_pod: [[f32; 3]; 2],
+    pub dropped_for: [f32; 2],
 }
 
 impl CtfState {
@@ -30,6 +35,7 @@ impl CtfState {
             flag_state: [FLAG_AT_POD, FLAG_AT_POD],
             flag_pos: flag_pod,
             flag_pod,
+            dropped_for: [0.0; 2],
         };
         s.reset();
         s
@@ -38,6 +44,7 @@ impl CtfState {
     pub fn reset(&mut self) {
         self.flag_state = [FLAG_AT_POD, FLAG_AT_POD];
         self.flag_pos = self.flag_pod;
+        self.dropped_for = [0.0; 2];
     }
 
     pub fn supports_ctf(&self) -> bool {
@@ -53,7 +60,7 @@ pub fn map_flag_pod(spawns: &crate::config::MapSpawns) -> [[f32; 3]; 2] {
     spawns.flag_pod
 }
 
-pub fn tick_ctf(game: &mut GameServer) {
+pub fn tick_ctf(game: &mut GameServer, dt: f32) {
     if game.config.game_type != GAME_TYPE_CTF
         || game.round_state != GAME_PLAYING
         || !game.ctf.supports_ctf()
@@ -62,6 +69,17 @@ pub fn tick_ctf(game: &mut GameServer) {
     }
 
     sync_carrier_positions(game);
+
+    for flag_id in 0..2 {
+        if game.ctf.flag_state[flag_id] == FLAG_DROPPED {
+            game.ctf.dropped_for[flag_id] += dt;
+            if game.ctf.dropped_for[flag_id] >= DROPPED_FLAG_AUTO_RETURN {
+                force_return_flag(game, flag_id, "Dropped flag auto-returned");
+            }
+        } else {
+            game.ctf.dropped_for[flag_id] = 0.0;
+        }
+    }
 
     for slot in 0..MAX_PLAYER {
         let Some(p) = game.players[slot].as_ref() else {
@@ -118,9 +136,13 @@ fn tick_blue_flag(game: &mut GameServer, slot: usize, team: i8, pos: [f32; 3]) {
         }
     } else if state == FLAG_DROPPED {
         let drop = game.ctf.flag_pos[0];
-        if team == PLAYER_TEAM_RED && dist_sq_xy(pos, drop) <= DROP_RADIUS * DROP_RADIUS {
+        if team == PLAYER_TEAM_RED
+            && dist_sq_xy(pos, drop) <= BLUE_DROP_TAKE_RADIUS * BLUE_DROP_TAKE_RADIUS
+        {
             take_flag(game, 0, slot);
-        } else if team == PLAYER_TEAM_BLUE && dist_sq_xy(pos, drop) <= DROP_RADIUS * DROP_RADIUS {
+        } else if team == PLAYER_TEAM_BLUE
+            && dist_sq_xy(pos, drop) <= BLUE_DROP_RETURN_RADIUS * BLUE_DROP_RETURN_RADIUS
+        {
             return_flag(game, 0, slot);
         }
     }
@@ -143,9 +165,13 @@ fn tick_red_flag(game: &mut GameServer, slot: usize, team: i8, pos: [f32; 3]) {
         }
     } else if state == FLAG_DROPPED {
         let drop = game.ctf.flag_pos[1];
-        if team == PLAYER_TEAM_BLUE && dist_sq_xy(pos, drop) <= DROP_RADIUS * DROP_RADIUS {
+        if team == PLAYER_TEAM_BLUE
+            && dist_sq_xy(pos, drop) <= RED_DROP_TAKE_RADIUS * RED_DROP_TAKE_RADIUS
+        {
             take_flag(game, 1, slot);
-        } else if team == PLAYER_TEAM_RED && dist_sq_xy(pos, drop) <= DROP_RADIUS * DROP_RADIUS {
+        } else if team == PLAYER_TEAM_RED
+            && dist_sq_xy(pos, drop) <= RED_DROP_RETURN_RADIUS * RED_DROP_RETURN_RADIUS
+        {
             return_flag(game, 1, slot);
         }
     }
@@ -154,6 +180,7 @@ fn tick_red_flag(game: &mut GameServer, slot: usize, team: i8, pos: [f32; 3]) {
 fn take_flag(game: &mut GameServer, flag_id: usize, slot: usize) {
     let previous_state = game.ctf.flag_state[flag_id];
     game.ctf.flag_state[flag_id] = slot as i8;
+    game.ctf.dropped_for[flag_id] = 0.0;
     if let Some(p) = game.players[slot].as_mut() {
         p.flag_attempts += 1;
     }
@@ -166,6 +193,7 @@ fn return_flag(game: &mut GameServer, flag_id: usize, slot: usize) {
     let previous_state = game.ctf.flag_state[flag_id];
     game.ctf.flag_state[flag_id] = FLAG_AT_POD;
     game.ctf.flag_pos[flag_id] = game.ctf.flag_pod[flag_id];
+    game.ctf.dropped_for[flag_id] = 0.0;
     if let Some(p) = game.players[slot].as_mut() {
         p.returns += 1;
     }
@@ -403,13 +431,41 @@ pub fn drop_carrier_flags(game: &mut GameServer, slot: usize) {
         return;
     }
     while let Some(flag_id) = game.ctf.carrier_flag(slot) {
-        if let Some(p) = game.players[slot].as_ref() {
-            game.ctf.flag_pos[flag_id] = p.cf.position;
-        }
+        let position = game.players[slot].as_ref().map(|p| p.cf.position);
+        let Some(position) = position.filter(|position| recoverable_drop(game, *position)) else {
+            force_return_flag(game, flag_id, "Flag returned after an out-of-bounds drop");
+            continue;
+        };
+        game.ctf.flag_pos[flag_id] = position;
         game.ctf.flag_state[flag_id] = FLAG_DROPPED;
+        game.ctf.dropped_for[flag_id] = 0.0;
         log_flag_transition(game, "drop", flag_id, slot, slot as i8);
         game.broadcast(packet::drop_flag(flag_id as i8, game.ctf.flag_pos[flag_id]));
     }
+}
+
+fn recoverable_drop(game: &GameServer, position: [f32; 3]) -> bool {
+    if !position.iter().all(|coordinate| coordinate.is_finite())
+        || !game.map_grid.contains_xy(position[0], position[1])
+        || position[2] < -0.5
+    {
+        return false;
+    }
+    game.map_grid
+        .is_passable(position[0].floor() as i32, position[1].floor() as i32)
+}
+
+fn force_return_flag(game: &mut GameServer, flag_id: usize, message: &str) {
+    game.ctf.flag_state[flag_id] = FLAG_AT_POD;
+    game.ctf.flag_pos[flag_id] = game.ctf.flag_pod[flag_id];
+    game.ctf.dropped_for[flag_id] = 0.0;
+    broadcast_flag_enum(game);
+    let mut body = vec![0u8; 132];
+    body[1] = crate::game::CHAT_TEAM_ALL as u8;
+    let bytes = message.as_bytes();
+    let length = bytes.len().min(129);
+    body[2..2 + length].copy_from_slice(&bytes[..length]);
+    game.broadcast(packet::encode_frame(ids::NET_SVCL_MSG, &body));
 }
 
 fn log_flag_transition(
@@ -491,6 +547,47 @@ mod tests {
     use crate::game::Player;
     use std::path::PathBuf;
 
+    fn dropped_interaction_happens(flag_id: usize, team: i8, distance: f32) -> bool {
+        let mut game = game();
+        game.map_grid = crate::map::MapGrid::fixture(16, &[]);
+        let mut player = Player::new(0, 1, "test".into());
+        player.team_id = team;
+        player.status = PLAYER_STATUS_ALIVE;
+        player.cf.position = [5.0 + distance, 5.0, 0.25];
+        game.players[0] = Some(player);
+        game.ctf.flag_state[flag_id] = FLAG_DROPPED;
+        game.ctf.flag_pos[flag_id] = [5.0, 5.0, 0.25];
+        tick_ctf(&mut game, 0.0);
+        game.ctf.flag_state[flag_id] != FLAG_DROPPED
+    }
+
+    fn pod_interaction_happens(team: i8, capture_action: bool, distance: f32) -> bool {
+        let mut game = game();
+        game.config.win_limit = 0;
+        game.map_grid = crate::map::MapGrid::fixture(16, &[]);
+        let own_flag = if team == PLAYER_TEAM_BLUE { 0 } else { 1 };
+        let enemy_flag = 1 - own_flag;
+        let mut player = Player::new(0, 1, "test".into());
+        player.team_id = team;
+        player.status = PLAYER_STATUS_ALIVE;
+        let pod = if capture_action {
+            game.ctf.flag_pod[own_flag]
+        } else {
+            game.ctf.flag_pod[enemy_flag]
+        };
+        player.cf.position = [pod[0] + distance, pod[1], 0.25];
+        game.players[0] = Some(player);
+        if capture_action {
+            game.ctf.flag_state[enemy_flag] = 0;
+        }
+        tick_ctf(&mut game, 0.0);
+        if capture_action {
+            game.players[0].as_ref().unwrap().score == 1
+        } else {
+            game.ctf.flag_state[enemy_flag] == 0
+        }
+    }
+
     fn game() -> GameServer {
         GameServer::new(ServerConfig {
             bind_addr: "127.0.0.1:0".into(),
@@ -552,11 +649,60 @@ mod tests {
     }
 
     #[test]
+    fn native_dropped_flag_boundaries_are_explicit_for_both_actions_and_teams() {
+        let epsilon = 0.0001;
+        for team in [PLAYER_TEAM_BLUE, PLAYER_TEAM_RED] {
+            // Blue flag: both enemy take and friendly return use 0.5.
+            assert!(dropped_interaction_happens(0, team, 0.5 - epsilon));
+            assert!(dropped_interaction_happens(0, team, 0.5));
+            assert!(!dropped_interaction_happens(0, team, 0.5 + epsilon));
+            // Red flag: both enemy take and friendly return use 0.25.
+            assert!(dropped_interaction_happens(1, team, 0.25 - epsilon));
+            assert!(dropped_interaction_happens(1, team, 0.25));
+            assert!(!dropped_interaction_happens(1, team, 0.25 + epsilon));
+            for capture_action in [false, true] {
+                assert!(pod_interaction_happens(
+                    team,
+                    capture_action,
+                    0.25 - epsilon
+                ));
+                assert!(pod_interaction_happens(team, capture_action, 0.25));
+                assert!(!pod_interaction_happens(
+                    team,
+                    capture_action,
+                    0.25 + epsilon
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn unrecoverable_drops_return_immediately_and_ground_drops_auto_return() {
+        let mut game = game();
+        game.map_grid = crate::map::MapGrid::fixture(8, &[(3, 3)]);
+        add_blue(&mut game);
+        game.ctf.flag_state[1] = 0;
+        for invalid in [[-1.0, 2.0, 0.25], [3.2, 3.2, 0.25], [2.0, 2.0, -2.0]] {
+            game.players[0].as_mut().unwrap().cf.position = invalid;
+            drop_carrier_flags(&mut game, 0);
+            assert_eq!(game.ctf.flag_state[1], FLAG_AT_POD);
+            game.ctf.flag_state[1] = 0;
+        }
+
+        game.players[0].as_mut().unwrap().cf.position = [2.0, 2.0, 0.25];
+        drop_carrier_flags(&mut game, 0);
+        assert_eq!(game.ctf.flag_state[1], FLAG_DROPPED);
+        tick_ctf(&mut game, DROPPED_FLAG_AUTO_RETURN);
+        assert_eq!(game.ctf.flag_state[1], FLAG_AT_POD);
+        assert_eq!(game.ctf.flag_pos[1], game.ctf.flag_pod[1]);
+    }
+
+    #[test]
     fn ended_match_resets_scores_players_and_flags() {
         let mut game = game();
         let old_map = game.config.map_name.clone();
         add_blue(&mut game);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
         game.register_session(99, tx);
         capture(&mut game, 0, PLAYER_TEAM_BLUE);
         while rx.try_recv().is_ok() {}

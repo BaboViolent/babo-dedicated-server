@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -284,10 +285,16 @@ pub struct MapTransfer {
     pub offset: usize,
 }
 
+pub struct SessionSender {
+    tx: mpsc::Sender<Vec<u8>>,
+    reliable_backpressure: Arc<AtomicBool>,
+}
+
 pub struct GameServer {
     pub config: ServerConfig,
     pub players: [Option<Player>; MAX_PLAYER],
-    pub sessions: HashMap<BaboNetId, mpsc::UnboundedSender<Vec<u8>>>,
+    pub sessions: HashMap<BaboNetId, SessionSender>,
+    request_limits: HashMap<BaboNetId, RequestLimit>,
     next_babonet: AtomicU32,
     pub map_spawns: MapSpawns,
     pub map_grid: MapGrid,
@@ -310,6 +317,27 @@ pub struct GameServer {
     pub vote: VoteState,
     pub recent_chat: VecDeque<RecentChat>,
     started: Instant,
+}
+
+#[derive(Debug)]
+struct RequestLimit {
+    started: Instant,
+    chat: u8,
+    vote: u8,
+    map: u8,
+    profile: u8,
+}
+
+impl Default for RequestLimit {
+    fn default() -> Self {
+        Self {
+            started: Instant::now(),
+            chat: 0,
+            vote: 0,
+            map: 0,
+            profile: 0,
+        }
+    }
 }
 
 impl GameServer {
@@ -362,6 +390,7 @@ impl GameServer {
             config,
             players: std::array::from_fn(|_| None),
             sessions: HashMap::new(),
+            request_limits: HashMap::new(),
             next_babonet: AtomicU32::new(1),
             map_spawns,
             map_grid,
@@ -398,23 +427,36 @@ impl GameServer {
         self.next_babonet.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub fn register_session(&mut self, id: BaboNetId, tx: mpsc::UnboundedSender<Vec<u8>>) {
-        self.sessions.insert(id, tx);
+    pub fn register_session(&mut self, id: BaboNetId, tx: mpsc::Sender<Vec<u8>>) {
+        self.sessions.insert(
+            id,
+            SessionSender {
+                tx,
+                reliable_backpressure: Arc::new(AtomicBool::new(false)),
+            },
+        );
+        self.request_limits.insert(id, RequestLimit::default());
     }
 
     pub fn unregister_session(&mut self, id: BaboNetId) {
         self.sessions.remove(&id);
+        self.request_limits.remove(&id);
     }
 
     pub fn send_to(&self, id: BaboNetId, data: Vec<u8>) {
-        if let Some(tx) = self.sessions.get(&id) {
-            let _ = tx.send(data);
+        if let Some(session) = self.sessions.get(&id) {
+            let coalescible = coalescible_packet(&data);
+            if session.tx.try_send(data).is_err() && !coalescible {
+                session.reliable_backpressure.store(true, Ordering::Relaxed);
+            }
         }
     }
 
     pub fn broadcast(&self, data: Vec<u8>) {
-        for tx in self.sessions.values() {
-            let _ = tx.send(data.clone());
+        for session in self.sessions.values() {
+            if session.tx.try_send(data.clone()).is_err() && !coalescible_packet(&data) {
+                session.reliable_backpressure.store(true, Ordering::Relaxed);
+            }
         }
     }
 
@@ -462,6 +504,11 @@ impl GameServer {
             tracing::info!("disconnect slot {slot}");
         }
         self.unregister_session(babonet_id);
+        self.map_transfers
+            .retain(|transfer| transfer.babonet_id != babonet_id);
+        if self.config.game_type == GAME_TYPE_SND {
+            snd::rebalance_sections(self);
+        }
         if removed_human {
             reconcile_bot_roster(self);
         }
@@ -587,6 +634,20 @@ impl GameServer {
     }
 
     pub fn tick(&mut self, dt: f32) {
+        let stalled: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, session)| {
+                session
+                    .reliable_backpressure
+                    .load(Ordering::Relaxed)
+                    .then_some(*id)
+            })
+            .collect();
+        for id in stalled {
+            tracing::warn!(id, "disconnecting reliably backpressured client");
+            self.disconnect_babonet(id);
+        }
         self.frame_id += 1;
         if self.round_state == GAME_PLAYING && self.config.game_time_limit > 0.0 {
             self.game_time_left = (self.game_time_left - dt).max(0.0);
@@ -620,7 +681,7 @@ impl GameServer {
             projectile::tick_projectiles(self, dt);
             shoot::tick_special_weapons(self, dt);
             shoot::tick_photon_beams(self);
-            ctf::tick_ctf(self);
+            ctf::tick_ctf(self, dt);
             snd::tick_snd(self);
         }
         ctf::tick_match_lifecycle(self, dt);
@@ -779,7 +840,47 @@ impl GameServer {
         }
     }
 
+    fn request_rate_limited(&mut self, babonet_id: BaboNetId, type_id: u16) -> bool {
+        let limit = self.request_limits.entry(babonet_id).or_default();
+        if limit.started.elapsed() >= Duration::from_secs(1) {
+            *limit = RequestLimit::default();
+        }
+        let (counter, maximum) = match type_id {
+            ids::NET_CLSV_SVCL_CHAT => (&mut limit.chat, 8),
+            ids::NET_CLSV_SVCL_VOTE_REQUEST | ids::NET_CLSV_VOTE => (&mut limit.vote, 4),
+            ids::NET_CLSV_MAP_REQUEST | ids::NET_CLSV_MAP_LIST_REQUEST => (&mut limit.map, 4),
+            ids::NET_CLSV_SVCL_PLAYER_CHANGE_NAME | ids::NET_CLSV_SVCL_PLAYER_UPDATE_SKIN => {
+                (&mut limit.profile, 10)
+            }
+            _ => return false,
+        };
+        *counter = counter.saturating_add(1);
+        *counter > maximum
+    }
+
     pub fn handle_frame(&mut self, babonet_id: BaboNetId, type_id: u16, payload: &[u8]) {
+        let authenticated = self
+            .find_slot_by_babonet(babonet_id)
+            .and_then(|slot| self.players[slot].as_ref())
+            .is_some_and(|player| player.handshake_done);
+        if !authenticated
+            && !matches!(
+                type_id,
+                ids::NET_CLSV_GAMEVERSION_ACCEPTED | ids::NET_CLSV_PONG
+            )
+        {
+            tracing::warn!(babonet_id, type_id, "pre-auth application packet rejected");
+            self.disconnect_babonet(babonet_id);
+            return;
+        }
+        if authenticated && type_id == ids::NET_CLSV_GAMEVERSION_ACCEPTED {
+            tracing::warn!(babonet_id, "repeated handshake ignored");
+            return;
+        }
+        if authenticated && self.request_rate_limited(babonet_id, type_id) {
+            tracing::warn!(babonet_id, type_id, "application request rate limited");
+            return;
+        }
         match type_id {
             ids::NET_CLSV_PONG => {
                 let Some(pid) = wire_player_slot(payload) else {
@@ -864,26 +965,25 @@ impl GameServer {
                 }
             }
             ids::NET_CLSV_SVCL_PLAYER_INFO => {
-                if payload.len() < 33 {
+                if payload.len() < 122 {
                     return;
                 }
                 let Some(pid) = wire_player_slot(payload) else {
                     return;
                 };
-                let name = packet::read_str(payload, 1, 32);
+                let name = packet::read_str(payload, 17, 32);
                 if let Some(p) = self.players.get_mut(pid).and_then(Option::as_mut) {
                     if p.babonet_id != babonet_id {
                         return;
                     }
+                    let name = sanitize_player_name(&name);
                     p.name = if name.is_empty() {
                         p.name.clone()
                     } else {
                         name
                     };
                     let mut out = payload.to_vec();
-                    if out.len() >= 48 {
-                        write_ip16(&mut out[17..33], &p.ip);
-                    }
+                    write_ip16(&mut out[1..17], &p.ip);
                     let enum_body = p.enum_state_bytes();
                     self.broadcast(packet::encode_frame(ids::NET_CLSV_SVCL_PLAYER_INFO, &out));
                     self.broadcast(packet::encode_frame(
@@ -958,7 +1058,7 @@ impl GameServer {
                 if self.round_state != GAME_PLAYING {
                     return;
                 }
-                if payload.len() < 4 {
+                if payload.len() < 19 {
                     return;
                 }
                 let Some(pid) = wire_player_slot(payload) else {
@@ -1000,12 +1100,10 @@ impl GameServer {
 
                 p.weapon_id = weapon;
                 p.melee_id = melee;
-                if payload.len() >= 22 {
-                    p.skin.copy_from_slice(&payload[3..10.min(payload.len())]);
-                    p.red_decal.copy_from_slice(&payload[10..13]);
-                    p.green_decal.copy_from_slice(&payload[13..16]);
-                    p.blue_decal.copy_from_slice(&payload[16..19]);
-                }
+                p.skin.copy_from_slice(&payload[3..10]);
+                p.red_decal.copy_from_slice(&payload[10..13]);
+                p.green_decal.copy_from_slice(&payload[13..16]);
+                p.blue_decal.copy_from_slice(&payload[16..19]);
                 p.cf.position = pos;
                 p.cf.vel = [0.0, 0.0, 0.0];
                 p.status = PLAYER_STATUS_ALIVE;
@@ -1057,21 +1155,21 @@ impl GameServer {
                     return;
                 }
 
-                let frame_id = packet::read_i32(payload, 1).unwrap_or(0);
-                if frame_id <= p.cf.frame_id && p.cf.frame_id != 0 {
+                let frame_id = packet::read_i32(payload, 4).unwrap_or(0);
+                if !valid_movement_frame(p.cf.frame_id, frame_id) {
                     return;
                 }
                 let previous = p.cf.position;
                 let previous_velocity = p.cf.vel;
                 let mut requested = [
-                    packet::read_i16(payload, 5).unwrap_or(0) as f32 / ids::WIRE_POS,
-                    packet::read_i16(payload, 7).unwrap_or(0) as f32 / ids::WIRE_POS,
-                    packet::read_i16(payload, 9).unwrap_or(0) as f32 / ids::WIRE_POS,
+                    packet::read_i16(payload, 8).unwrap_or(0) as f32 / ids::WIRE_POS,
+                    packet::read_i16(payload, 10).unwrap_or(0) as f32 / ids::WIRE_POS,
+                    packet::read_i16(payload, 12).unwrap_or(0) as f32 / ids::WIRE_POS,
                 ];
                 let mut velocity = [
-                    payload.get(11).copied().unwrap_or(0) as i8 as f32 / ids::WIRE_VEL,
-                    payload.get(12).copied().unwrap_or(0) as i8 as f32 / ids::WIRE_VEL,
-                    payload.get(13).copied().unwrap_or(0) as i8 as f32 / ids::WIRE_VEL,
+                    payload.get(14).copied().unwrap_or(0) as i8 as f32 / ids::WIRE_VEL,
+                    payload.get(15).copied().unwrap_or(0) as i8 as f32 / ids::WIRE_VEL,
+                    payload.get(16).copied().unwrap_or(0) as i8 as f32 / ids::WIRE_VEL,
                 ];
                 bound_client_movement(
                     &self.map_grid,
@@ -1092,9 +1190,9 @@ impl GameServer {
                 p.cf.frame_id = frame_id;
                 p.cf.position = requested;
                 p.cf.vel = velocity;
-                p.cf.mouse[0] = packet::read_i16(payload, 14).unwrap_or(0) as f32 / ids::WIRE_POS;
-                p.cf.mouse[1] = packet::read_i16(payload, 16).unwrap_or(0) as f32 / ids::WIRE_POS;
-                p.cf.mouse[2] = packet::read_i16(payload, 18).unwrap_or(0) as f32 / ids::WIRE_POS;
+                p.cf.mouse[0] = packet::read_i16(payload, 18).unwrap_or(0) as f32 / ids::WIRE_POS;
+                p.cf.mouse[1] = packet::read_i16(payload, 20).unwrap_or(0) as f32 / ids::WIRE_POS;
+                p.cf.mouse[2] = packet::read_i16(payload, 22).unwrap_or(0) as f32 / ids::WIRE_POS;
                 p.coord_elapsed = 0.0;
 
                 let relay = build_coord_frame(pid as i8, p.babonet_id as i32, &p.cf);
@@ -1178,37 +1276,111 @@ impl GameServer {
                 if payload.is_empty() {
                     return;
                 }
-                let frame = packet::encode_frame(ids::NET_CLSV_SVCL_CHAT, payload);
-                // ServerRecv.cpp:562 — -2 goes to everyone, any other value is that team only.
-                let team = payload[0] as i8;
+                let requested_team = payload[0] as i8;
+                let Some(sender) = self
+                    .players
+                    .iter()
+                    .flatten()
+                    .find(|player| player.babonet_id == babonet_id && player.handshake_done)
+                else {
+                    return;
+                };
+                let team = if requested_team == CHAT_TEAM_ALL {
+                    CHAT_TEAM_ALL
+                } else if matches!(sender.team_id, PLAYER_TEAM_BLUE | PLAYER_TEAM_RED)
+                    && requested_team == sender.team_id
+                {
+                    sender.team_id
+                } else {
+                    // Spectators may use global chat, but have no private team channel.
+                    return;
+                };
+                let raw_message = packet::read_str(payload, 1, 130);
+                let message = sanitize_chat_text(&raw_message);
+                if message.is_empty() {
+                    return;
+                }
+                let player_id = sender.slot;
+                let player_name = sanitize_chat_text(&sender.name);
+                let visible = format!("{player_name}: {message}");
+                let mut outgoing = vec![0u8; 131];
+                outgoing[0] = team as u8;
+                let bytes = visible.as_bytes();
+                let length = bytes.len().min(129);
+                outgoing[1..1 + length].copy_from_slice(&bytes[..length]);
+                let frame = packet::encode_frame(ids::NET_CLSV_SVCL_CHAT, &outgoing);
+                if self.recent_chat.len() == RECENT_CHAT_LIMIT {
+                    self.recent_chat.pop_front();
+                }
+                self.recent_chat.push_back(RecentChat {
+                    player_id,
+                    player_name,
+                    message,
+                    at_seconds: self.uptime_secs(),
+                });
                 if team == CHAT_TEAM_ALL {
-                    if let Some(player) = self
-                        .players
-                        .iter()
-                        .flatten()
-                        .find(|player| player.babonet_id == babonet_id)
-                    {
-                        let message = packet::read_str(payload, 1, 130);
-                        if !message.is_empty() {
-                            if self.recent_chat.len() == RECENT_CHAT_LIMIT {
-                                self.recent_chat.pop_front();
-                            }
-                            self.recent_chat.push_back(RecentChat {
-                                player_id: player.slot,
-                                player_name: player.name.clone(),
-                                message,
-                                at_seconds: self.uptime_secs(),
-                            });
-                        }
-                    }
                     self.broadcast(frame);
                 } else {
-                    for p in self.players.iter().flatten() {
-                        if p.team_id == team {
-                            self.send_to(p.babonet_id, frame.clone());
-                        }
+                    for player in self.players.iter().flatten().filter(|p| p.team_id == team) {
+                        self.send_to(player.babonet_id, frame.clone());
                     }
                 }
+            }
+            ids::NET_CLSV_SVCL_PLAYER_CHANGE_NAME => {
+                if payload.len() != 33 {
+                    return;
+                }
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                let name = sanitize_player_name(&packet::read_str(payload, 1, 32));
+                if name.is_empty() {
+                    return;
+                }
+                let Some(player) = self.players.get_mut(pid).and_then(Option::as_mut) else {
+                    return;
+                };
+                if player.babonet_id != babonet_id {
+                    tracing::warn!(
+                        babonet_id,
+                        claimed_player = pid,
+                        "spoofed profile name rejected"
+                    );
+                    return;
+                }
+                player.name = name.clone();
+                let mut outgoing = vec![0u8; 33];
+                outgoing[0] = pid as u8;
+                write_name31(&mut outgoing[1..33], &name);
+                self.broadcast(packet::encode_frame(type_id, &outgoing));
+            }
+            ids::NET_CLSV_SVCL_PLAYER_UPDATE_SKIN => {
+                if payload.len() != 17 {
+                    return;
+                }
+                let Some(pid) = wire_player_slot(payload) else {
+                    return;
+                };
+                let skin_name = normalize_skin_name(&packet::read_str(payload, 1, 7));
+                let Some(player) = self.players.get_mut(pid).and_then(Option::as_mut) else {
+                    return;
+                };
+                if player.babonet_id != babonet_id {
+                    tracing::warn!(
+                        babonet_id,
+                        claimed_player = pid,
+                        "spoofed profile skin rejected"
+                    );
+                    return;
+                }
+                player.skin = skin_name;
+                player.red_decal.copy_from_slice(&payload[8..11]);
+                player.green_decal.copy_from_slice(&payload[11..14]);
+                player.blue_decal.copy_from_slice(&payload[14..17]);
+                let mut outgoing = payload.to_vec();
+                outgoing[0] = pid as u8;
+                outgoing[1..8].copy_from_slice(&skin_name);
+                self.broadcast(packet::encode_frame(type_id, &outgoing));
             }
             ids::NET_CLSV_SVCL_VOTE_REQUEST => {
                 voting::handle_vote_request(self, babonet_id, payload)
@@ -1230,6 +1402,31 @@ impl GameServer {
                 }
                 let path = self.config.map_path(&name);
                 if let Ok(data) = std::fs::read(&path) {
+                    const MAX_MAP_BYTES: usize = 16 * 1024 * 1024;
+                    const MAX_TOTAL_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
+                    if data.len() > MAX_MAP_BYTES {
+                        tracing::warn!(
+                            name,
+                            bytes = data.len(),
+                            "map request exceeds transfer limit"
+                        );
+                        return;
+                    }
+                    self.map_transfers
+                        .retain(|transfer| transfer.babonet_id != babonet_id);
+                    let buffered: usize = self
+                        .map_transfers
+                        .iter()
+                        .map(|transfer| transfer.data.len().saturating_sub(transfer.offset))
+                        .sum();
+                    if buffered.saturating_add(data.len()) > MAX_TOTAL_TRANSFER_BYTES {
+                        tracing::warn!(
+                            bytes = data.len(),
+                            buffered,
+                            "total map transfer limit reached"
+                        );
+                        return;
+                    }
                     self.map_transfers.push(MapTransfer {
                         babonet_id,
                         data,
@@ -1303,33 +1500,33 @@ impl GameServer {
 
 pub(crate) fn player_spawn_bytes(slot: usize, p: &Player) -> Vec<u8> {
     let pos = p.cf.position;
-    let mut body = vec![0u8; 28];
+    let mut body = vec![0u8; 26];
     body[0] = slot as u8;
     body[1] = p.weapon_id as u8;
     body[2] = p.melee_id as u8;
-    body[3..5].copy_from_slice(&((pos[0] * 10.0) as i16).to_le_bytes());
-    body[5..7].copy_from_slice(&((pos[1] * 10.0) as i16).to_le_bytes());
-    body[7..9].copy_from_slice(&((pos[2] * 10.0) as i16).to_le_bytes());
-    body[9..16].copy_from_slice(&p.skin);
-    body[16..19].copy_from_slice(&p.red_decal);
-    body[19..22].copy_from_slice(&p.green_decal);
-    body[22..25].copy_from_slice(&p.blue_decal);
+    body[4..6].copy_from_slice(&((pos[0] * 10.0) as i16).to_le_bytes());
+    body[6..8].copy_from_slice(&((pos[1] * 10.0) as i16).to_le_bytes());
+    body[8..10].copy_from_slice(&((pos[2] * 10.0) as i16).to_le_bytes());
+    body[10..17].copy_from_slice(&p.skin);
+    body[17..20].copy_from_slice(&p.red_decal);
+    body[20..23].copy_from_slice(&p.green_decal);
+    body[23..26].copy_from_slice(&p.blue_decal);
     body
 }
 
 fn build_coord_frame(player_id: i8, babonet_id: i32, cf: &CoordFrame) -> Vec<u8> {
     let mut p = vec![0u8; 28];
     p[0] = player_id as u8;
-    p[1..5].copy_from_slice(&cf.frame_id.to_le_bytes());
-    p[5..7].copy_from_slice(&((cf.position[0] * ids::WIRE_POS) as i16).to_le_bytes());
-    p[7..9].copy_from_slice(&((cf.position[1] * ids::WIRE_POS) as i16).to_le_bytes());
-    p[9..11].copy_from_slice(&((cf.position[2] * ids::WIRE_POS) as i16).to_le_bytes());
-    p[11] = (cf.vel[0] * ids::WIRE_VEL) as i8 as u8;
-    p[12] = (cf.vel[1] * ids::WIRE_VEL) as i8 as u8;
-    p[13] = (cf.vel[2] * ids::WIRE_VEL) as i8 as u8;
-    p[14..16].copy_from_slice(&((cf.mouse[0] * ids::WIRE_POS) as i16).to_le_bytes());
-    p[16..18].copy_from_slice(&((cf.mouse[1] * ids::WIRE_POS) as i16).to_le_bytes());
-    p[18..20].copy_from_slice(&((cf.mouse[2] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[4..8].copy_from_slice(&cf.frame_id.to_le_bytes());
+    p[8..10].copy_from_slice(&((cf.position[0] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[10..12].copy_from_slice(&((cf.position[1] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[12..14].copy_from_slice(&((cf.position[2] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[14] = (cf.vel[0] * ids::WIRE_VEL) as i8 as u8;
+    p[15] = (cf.vel[1] * ids::WIRE_VEL) as i8 as u8;
+    p[16] = (cf.vel[2] * ids::WIRE_VEL) as i8 as u8;
+    p[18..20].copy_from_slice(&((cf.mouse[0] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[20..22].copy_from_slice(&((cf.mouse[1] * ids::WIRE_POS) as i16).to_le_bytes());
+    p[22..24].copy_from_slice(&((cf.mouse[2] * ids::WIRE_POS) as i16).to_le_bytes());
     p[24..28].copy_from_slice(&babonet_id.to_le_bytes());
     packet::encode_frame(ids::NET_CLSV_SVCL_PLAYER_COORD_FRAME, &p)
 }
@@ -1385,8 +1582,8 @@ fn bound_client_movement(
 }
 
 pub(crate) fn write_name31(buf: &mut [u8], name: &str) {
-    let n = name.len().min(31);
-    buf[..n].copy_from_slice(&name.as_bytes()[..n]);
+    let safe = truncate_utf8_bytes(name, 31.min(buf.len().saturating_sub(1)));
+    buf[..safe.len()].copy_from_slice(safe.as_bytes());
 }
 
 fn write_ip16(buf: &mut [u8], ip: &str) {
@@ -1394,12 +1591,66 @@ fn write_ip16(buf: &mut [u8], ip: &str) {
     buf[..n].copy_from_slice(&ip.as_bytes()[..n]);
 }
 
+fn sanitize_chat_text(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !ch.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn sanitize_player_name(text: &str) -> String {
+    let clean = sanitize_chat_text(text);
+    truncate_utf8_bytes(&clean, 31).to_string()
+}
+
+fn truncate_utf8_bytes(text: &str, maximum: usize) -> &str {
+    let mut end = text.len().min(maximum);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+fn valid_movement_frame(previous: i32, next: i32) -> bool {
+    if previous == 0 {
+        return next != 0;
+    }
+    let delta = next.wrapping_sub(previous) as u32;
+    (1..=600).contains(&delta)
+}
+
+fn normalize_skin_name(text: &str) -> [u8; 7] {
+    let valid = text.strip_prefix("skin").is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.len() <= 2 && suffix.bytes().all(|b| b.is_ascii_digit())
+    });
+    let selected = if valid { text } else { "skin10" };
+    let mut out = [0u8; 7];
+    out[..selected.len()].copy_from_slice(selected.as_bytes());
+    out
+}
+
+fn coalescible_packet(frame: &[u8]) -> bool {
+    if frame.len() < 4 {
+        return false;
+    }
+    let type_id = u16::from_le_bytes([frame[2], frame[3]]);
+    matches!(
+        type_id,
+        ids::NET_CLSV_SVCL_PLAYER_COORD_FRAME
+            | ids::NET_SVCL_SYNCHRONIZE_TIMER
+            | ids::NET_SVCL_PLAYER_PING
+            | ids::NET_SVCL_PROJECTILE_COORD_FRAME
+    )
+}
+
 #[cfg(test)]
 mod movement_authority_tests {
     use super::{
-        bound_client_movement, duration_ms_i16, is_advertised_map, map_allowed_for_game_type,
-        valid_player_team, wire_player_slot, GameServer, Player, GAME_TYPE_CTF, GAME_TYPE_SND,
-        PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
+        bound_client_movement, build_coord_frame, duration_ms_i16, is_advertised_map,
+        map_allowed_for_game_type, player_spawn_bytes, sanitize_player_name, valid_movement_frame,
+        valid_player_team, wire_player_slot, write_name31, CoordFrame, GameServer, Player,
+        GAME_TYPE_CTF, GAME_TYPE_SND, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
     };
     use crate::config::ServerConfig;
     use crate::map::MapGrid;
@@ -1418,12 +1669,322 @@ mod movement_authority_tests {
     }
 
     #[test]
+    fn player_names_truncate_on_utf8_boundaries_without_panicking() {
+        let crossing = format!("{}é", "a".repeat(30));
+        assert_eq!(sanitize_player_name(&crossing), "a".repeat(30));
+        assert_eq!(sanitize_player_name("  Al\n ice  "), "Al ice");
+        let mut wire = [0u8; 32];
+        write_name31(&mut wire, &crossing);
+        assert_eq!(&wire[..30], "a".repeat(30).as_bytes());
+        assert_eq!(wire[30], 0);
+    }
+
+    #[test]
+    fn movement_frame_jumps_are_bounded_and_wrap_safely() {
+        assert!(valid_movement_frame(100, 101));
+        assert!(valid_movement_frame(i32::MAX, i32::MIN));
+        assert!(!valid_movement_frame(100, 100));
+        assert!(!valid_movement_frame(100, 10_000));
+        assert!(
+            valid_movement_frame(100, 101),
+            "a rejected jump must not wedge later input"
+        );
+    }
+
+    #[test]
+    fn player_spawn_and_coordinate_vectors_follow_packed_contract() {
+        let mut player = Player::new(3, 0x11223344, "test".into());
+        player.weapon_id = 2;
+        player.melee_id = 8;
+        player.cf.position = [1.2, -2.3, 0.4];
+        player.skin = *b"skin10\0";
+        player.red_decal = [1, 2, 3];
+        player.green_decal = [4, 5, 6];
+        player.blue_decal = [7, 8, 9];
+        let spawn = player_spawn_bytes(3, &player);
+        assert_eq!(spawn.len(), 26);
+        assert_eq!(&spawn[0..4], &[3, 2, 8, 0]);
+        assert_eq!(&spawn[4..10], &[12, 0, 233, 255, 4, 0]);
+        assert_eq!(&spawn[10..17], b"skin10\0");
+        assert_eq!(&spawn[17..26], &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+        let cf = CoordFrame {
+            frame_id: 0x01020304,
+            position: [1.0, -2.0, 0.25],
+            vel: [1.0, -1.0, 0.0],
+            mouse: [3.0, 4.0, 0.25],
+        };
+        let encoded = build_coord_frame(3, 0x11223344, &cf);
+        let frame = crate::net::packet::decode_frame(&encoded).unwrap().unwrap();
+        assert_eq!(frame.payload.len(), 28);
+        assert_eq!(&frame.payload[0..4], &[3, 0, 0, 0]);
+        assert_eq!(&frame.payload[4..8], &[4, 3, 2, 1]);
+        assert_eq!(&frame.payload[24..28], &[0x44, 0x33, 0x22, 0x11]);
+    }
+
+    #[test]
+    fn profile_updates_are_authenticated_bounded_and_state_preserving() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 2,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        let mut first = Player::new(0, 7, "old".into());
+        first.name = "old".into();
+        first.handshake_done = true;
+        first.life = 42.0;
+        first.team_id = PLAYER_TEAM_BLUE;
+        first.weapon_id = 5;
+        let mut second = Player::new(1, 8, "other".into());
+        second.name = "other".into();
+        second.handshake_done = true;
+        game.players[0] = Some(first);
+        game.players[1] = Some(second);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+        game.register_session(8, tx);
+
+        let mut spoof = [0u8; 33];
+        spoof[0] = 0;
+        spoof[1..6].copy_from_slice(b"owned");
+        game.handle_frame(8, crate::net::ids::NET_CLSV_SVCL_PLAYER_CHANGE_NAME, &spoof);
+        assert_eq!(game.players[0].as_ref().unwrap().name, "old");
+
+        let mut name = [0u8; 33];
+        name[0] = 0;
+        name[1..16].copy_from_slice(b"  Al\n ice Hero ");
+        game.handle_frame(7, crate::net::ids::NET_CLSV_SVCL_PLAYER_CHANGE_NAME, &name);
+        let player = game.players[0].as_ref().unwrap();
+        assert_eq!(player.name, "Al ice Hero");
+        assert_eq!(
+            (player.life, player.team_id, player.weapon_id),
+            (42.0, PLAYER_TEAM_BLUE, 5)
+        );
+
+        let mut skin = [0u8; 17];
+        skin[0] = 0;
+        skin[1..7].copy_from_slice(b"skin23");
+        skin[8..17].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        game.handle_frame(7, crate::net::ids::NET_CLSV_SVCL_PLAYER_UPDATE_SKIN, &skin);
+        let player = game.players[0].as_ref().unwrap();
+        assert_eq!(&player.skin, b"skin23\0");
+        assert_eq!(player.red_decal, [1, 2, 3]);
+        assert_eq!(
+            (player.life, player.team_id, player.weapon_id),
+            (42.0, PLAYER_TEAM_BLUE, 5)
+        );
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
+
+        game.disconnect_babonet(7);
+        let mut replacement = Player::new(0, 9, "replacement".into());
+        replacement.name = "replacement".into();
+        replacement.handshake_done = true;
+        game.players[0] = Some(replacement);
+        game.handle_frame(7, crate::net::ids::NET_CLSV_SVCL_PLAYER_CHANGE_NAME, &name);
+        assert_eq!(game.players[0].as_ref().unwrap().name, "replacement");
+    }
+
+    #[test]
     fn map_download_only_accepts_advertised_basenames() {
         let maps = vec!["CTF-Alert".to_string()];
         assert!(is_advertised_map(&maps, "CTF-Alert"));
         assert!(!is_advertised_map(&maps, "../bv2.cfg"));
         assert!(!is_advertised_map(&maps, "/etc/passwd"));
         assert!(!is_advertised_map(&maps, "CTF-Alert.bvm"));
+    }
+
+    #[test]
+    fn gameplay_before_handshake_releases_the_reserved_slot() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: "secret".into(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 1,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        assert_eq!(game.connect_client(7, "test".into()), Some(0));
+        game.handle_frame(7, crate::net::ids::NET_CLSV_SVCL_TEAM_REQUEST, &[0, 0]);
+        assert!(game.players[0].is_none());
+        assert_eq!(game.connect_client(8, "test".into()), Some(0));
+    }
+
+    #[test]
+    fn repeated_handshake_cannot_reset_a_live_player_or_replay_snapshots() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 1,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        let mut player = Player::new(0, 7, "test".into());
+        player.handshake_done = true;
+        player.status = super::PLAYER_STATUS_ALIVE;
+        player.spawned_once = true;
+        game.players[0] = Some(player);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+        game.register_session(7, tx);
+        let mut handshake = [0u8; 17];
+        handshake[0] = 0;
+        for _ in 0..100 {
+            game.handle_frame(
+                7,
+                crate::net::ids::NET_CLSV_GAMEVERSION_ACCEPTED,
+                &handshake,
+            );
+        }
+        let player = game.players[0].as_ref().unwrap();
+        assert_eq!(player.status, super::PLAYER_STATUS_ALIVE);
+        assert!(player.handshake_done);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn bounded_session_queue_sheds_a_non_reading_clients_packets() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 1,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+        game.register_session(7, tx);
+        let snapshot =
+            crate::net::packet::encode_frame(crate::net::ids::NET_SVCL_SYNCHRONIZE_TIMER, &[0; 12]);
+        for _ in 0..10_000 {
+            game.send_to(7, snapshot.clone());
+        }
+        assert_eq!(rx.try_recv().unwrap(), snapshot);
+        assert_eq!(rx.try_recv().unwrap(), snapshot);
+        assert!(rx.try_recv().is_err());
+        game.tick(0.0);
+        assert!(
+            game.sessions.contains_key(&7),
+            "shed snapshots must not disconnect"
+        );
+
+        game.send_to(7, snapshot.clone());
+        game.send_to(7, snapshot);
+        game.send_to(7, crate::net::packet::gameversion());
+        game.tick(0.0);
+        assert!(
+            !game.sessions.contains_key(&7),
+            "reliable backpressure must disconnect"
+        );
+    }
+
+    #[test]
+    fn disconnect_immediately_cancels_map_transfer() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 1,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        game.connect_client(7, "test".into());
+        game.map_transfers.push(super::MapTransfer {
+            babonet_id: 7,
+            data: vec![0; 1024],
+            offset: 0,
+        });
+        game.disconnect_babonet(7);
+        assert!(game.map_transfers.is_empty());
+    }
+
+    #[test]
+    fn chat_uses_authenticated_name_and_enforces_team_and_spectator_routing() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 3,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        let mut receivers = Vec::new();
+        for (slot, team) in [
+            PLAYER_TEAM_BLUE,
+            PLAYER_TEAM_RED,
+            super::PLAYER_TEAM_SPECTATOR,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut player = Player::new(slot, slot as u32 + 1, "test".into());
+            player.name = if slot == 0 {
+                "\u{3}Alice".into()
+            } else {
+                format!("P{slot}")
+            };
+            player.team_id = team;
+            player.handshake_done = true;
+            game.players[slot] = Some(player);
+            let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+            game.register_session(slot as u32 + 1, tx);
+            receivers.push(rx);
+        }
+        let mut team_message = vec![0u8; 131];
+        team_message[0] = PLAYER_TEAM_BLUE as u8;
+        team_message[1..15].copy_from_slice(b"\x04server: spoof");
+        game.handle_frame(1, crate::net::ids::NET_CLSV_SVCL_CHAT, &team_message);
+        assert_eq!(game.recent_chat.len(), 1);
+        let frame = receivers[0].try_recv().unwrap();
+        let decoded = crate::net::packet::decode_frame(&frame).unwrap().unwrap();
+        assert_eq!(decoded.payload[0] as i8, PLAYER_TEAM_BLUE);
+        assert_eq!(
+            crate::net::packet::read_str(&decoded.payload, 1, 130),
+            "Alice: server: spoof"
+        );
+        assert!(receivers[1].try_recv().is_err());
+        assert!(receivers[2].try_recv().is_err());
+
+        game.handle_frame(
+            3,
+            crate::net::ids::NET_CLSV_SVCL_CHAT,
+            &[PLAYER_TEAM_BLUE as u8, b'x'],
+        );
+        assert!(receivers
+            .iter_mut()
+            .all(|receiver| receiver.try_recv().is_err()));
     }
 
     #[test]
@@ -1495,7 +2056,7 @@ mod movement_authority_tests {
             game.players[slot] = Some(player);
         }
         game.ctf.flag_state[1] = 2;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
         game.register_session(99, tx);
 
         game.tick_auto_balance(0.02);

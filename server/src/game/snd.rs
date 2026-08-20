@@ -10,36 +10,55 @@ use crate::net::{ids, packet};
 
 pub const SND_ROUND_TIME: f32 = 3.0 * 60.0;
 const SPAWNS_PER_SLOT: usize = 5;
+const SECTION_SAFE_CAPACITY: usize = 4;
+
+pub fn rebalance_sections(game: &mut GameServer) {
+    let usable_sections = (game.map_spawns.dm.len() / SPAWNS_PER_SLOT).max(1);
+    let active: Vec<usize> = game
+        .players
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, player)| {
+            player
+                .as_ref()
+                .filter(|player| matches!(player.team_id, PLAYER_TEAM_BLUE | PLAYER_TEAM_RED))
+                .map(|_| slot)
+        })
+        .collect();
+    if active.is_empty() {
+        return;
+    }
+    let section_count = active
+        .len()
+        .div_ceil(SECTION_SAFE_CAPACITY)
+        .min(usable_sections);
+    for (index, player_slot) in active.into_iter().enumerate() {
+        // Round-robin produces balanced 3+2 rather than 4+1 for five players.
+        if let Some(player) = game.players[player_slot].as_mut() {
+            player.snd_spawn_slot = Some(index % section_count);
+        }
+    }
+}
 
 pub fn pick_spawn(game: &mut GameServer, player_id: usize) -> [f32; 3] {
-    let spawns = &game.map_spawns.dm;
-    if spawns.is_empty() {
+    if game.map_spawns.dm.is_empty() {
         return [0.0, 0.0, 0.25];
     }
 
     let existing = game.players[player_id]
         .as_ref()
         .and_then(|player| player.snd_spawn_slot);
-    let slot = existing.unwrap_or_else(|| {
-        let used: Vec<usize> = game
-            .players
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != player_id)
-            .filter_map(|(_, player)| {
-                let player = player.as_ref()?;
-                matches!(player.team_id, PLAYER_TEAM_BLUE | PLAYER_TEAM_RED)
-                    .then_some(player.snd_spawn_slot)
-                    .flatten()
-            })
-            .collect();
-        (0..MAX_PLAYER)
-            .find(|candidate| !used.contains(candidate))
-            .unwrap_or(0)
-    });
+    if existing.is_none() {
+        rebalance_sections(game);
+    }
+    let slot = game.players[player_id]
+        .as_ref()
+        .and_then(|player| player.snd_spawn_slot)
+        .unwrap_or(0);
     if let Some(player) = game.players[player_id].as_mut() {
         player.snd_spawn_slot = Some(slot);
     }
+    let spawns = &game.map_spawns.dm;
 
     // GameSpawn.cpp groups five consecutive DM points per slot and chooses a
     // point within that group. Frame/player IDs give deterministic variety.
@@ -115,14 +134,42 @@ mod tests {
     }
 
     #[test]
-    fn champion_players_keep_distinct_five_point_spawn_groups() {
+    fn first_two_champion_players_share_a_populated_section() {
         let mut game = game();
         let first = pick_spawn(&mut game, 0);
         let second = pick_spawn(&mut game, 1);
         assert!(first[0] < 5.0);
-        assert!((5.0..10.0).contains(&second[0]));
+        assert!(second[0] < 5.0);
         assert_eq!(game.players[0].as_ref().unwrap().snd_spawn_slot, Some(0));
-        assert_eq!(game.players[1].as_ref().unwrap().snd_spawn_slot, Some(1));
+        assert_eq!(game.players[1].as_ref().unwrap().snd_spawn_slot, Some(0));
+    }
+
+    #[test]
+    fn champion_populations_balance_without_singleton_sections() {
+        let mut game = game();
+        game.map_spawns.dm = (0..80).map(|x| [x as f32, 1.0, 0.0]).collect();
+        for population in 1..=16 {
+            for slot in 0..16 {
+                game.players[slot] = (slot < population).then(|| {
+                    let mut player = Player::new(slot, slot as u32 + 1, String::new());
+                    player.team_id = PLAYER_TEAM_BLUE;
+                    player
+                });
+            }
+            rebalance_sections(&mut game);
+            let mut counts = [0usize; 16];
+            for player in game.players.iter().flatten() {
+                counts[player.snd_spawn_slot.unwrap()] += 1;
+            }
+            let populated: Vec<_> = counts.into_iter().filter(|count| *count > 0).collect();
+            assert!(populated
+                .iter()
+                .all(|count| *count <= SECTION_SAFE_CAPACITY));
+            if population > 1 {
+                assert!(populated.iter().all(|count| *count >= 2));
+            }
+            assert!(populated.iter().max().unwrap() - populated.iter().min().unwrap() <= 1);
+        }
     }
 
     #[test]

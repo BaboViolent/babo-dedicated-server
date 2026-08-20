@@ -32,6 +32,7 @@ pub const NET_CLSV_SVCL_PLAYER_INFO: u16 = 201;
 pub const NET_CLSV_SVCL_CHAT: u16 = 202;
 pub const NET_CLSV_SVCL_TEAM_REQUEST: u16 = 203;
 pub const NET_CLSV_SVCL_PLAYER_COORD_FRAME: u16 = 204;
+pub const NET_CLSV_SVCL_PLAYER_CHANGE_NAME: u16 = 205;
 pub const NET_SVCL_PLAYER_HIT: u16 = 114;
 pub const NET_SVCL_EXPLOSION: u16 = 113;
 pub const NET_SVCL_DELETE_PROJECTILE: u16 = 111;
@@ -48,6 +49,7 @@ pub const NET_CLSV_REPORT_EXPLOSION: u16 = 220;
 pub const NET_CLSV_REPORT_BURN: u16 = 221;
 pub const NET_SVCL_MAP_CHUNK: u16 = 210;
 pub const NET_SVCL_MAP_LIST: u16 = 211;
+pub const NET_CLSV_SVCL_PLAYER_UPDATE_SKIN: u16 = 212;
 
 /// Open-source build server version (Server.h).
 pub const GAME_VERSION_SV: u32 = 21_000;

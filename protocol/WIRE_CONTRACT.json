@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "transport": "websocket-binary",
+  "byte_order": "little-endian",
+  "frame_header": { "size": 4, "payload_size": "u16@0", "type_id": "u16@2" },
+  "rules": ["fixed-width numeric fields", "zero reserved bytes", "signed IDs use i8 two's complement", "strict control-packet sizes"],
+  "packets": {
+    "1": 1, "2": 19, "3": 16, "4": 17, "7": 2,
+    "101": 8, "102": 29, "104": 1, "105": 96, "106": 1,
+    "107": 3, "108": 26, "110": 19, "111": 4, "112": 24,
+    "113": 29, "114": 16, "116": 4, "117": 12, "118": 3,
+    "119": 13, "120": 26, "121": 2, "123": 17, "124": 3,
+    "130": 2, "131": 1, "201": 122, "202": 131, "203": 2,
+    "204": 28, "205": 33, "206": 24, "207": 1, "208": 81,
+    "209": 20, "211": 16, "212": 17
+  },
+  "variable_packets": { "210": { "min": 2, "max": 252, "length": "u16@0" } }
+}

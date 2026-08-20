@@ -264,7 +264,83 @@ async fn ws_handler(State(game): State<AppState>, ws: WebSocketUpgrade) -> impl 
     ws.on_upgrade(move |socket| handle_socket(game, socket))
 }
 
+struct MovementBudget {
+    tokens: f64,
+    updated: std::time::Instant,
+}
+
+fn take_complete_frame(buf: &mut Vec<u8>) -> Result<Option<packet::NetFrame>, PacketError> {
+    let frame = packet::decode_frame(buf)?;
+    if let Some(ref complete) = frame {
+        buf.drain(..4 + complete.payload.len());
+    }
+    Ok(frame)
+}
+
+async fn dispatch_client_frame(
+    game: &AppState,
+    babonet_id: u32,
+    movement_budget: &mut MovementBudget,
+    frame: packet::NetFrame,
+) {
+    if frame.type_id == crate::net::ids::NET_CLSV_SVCL_PLAYER_COORD_FRAME
+        && !movement_budget.allow()
+    {
+        return;
+    }
+    game.write()
+        .await
+        .handle_frame(babonet_id, frame.type_id, &frame.payload);
+}
+
+fn coalesce_movement_frames(frames: Vec<packet::NetFrame>) -> Vec<packet::NetFrame> {
+    let mut out = Vec::with_capacity(frames.len());
+    let mut pending = None;
+    for frame in frames {
+        if frame.type_id == crate::net::ids::NET_CLSV_SVCL_PLAYER_COORD_FRAME {
+            pending = Some(frame);
+            continue;
+        }
+        if let Some(movement) = pending.take() {
+            out.push(movement);
+        }
+        out.push(frame);
+    }
+    if let Some(movement) = pending {
+        out.push(movement);
+    }
+    out
+}
+
+impl MovementBudget {
+    const RATE: f64 = 60.0;
+    const BURST: f64 = 12.0;
+
+    fn new() -> Self {
+        Self {
+            tokens: Self::BURST,
+            updated: std::time::Instant::now(),
+        }
+    }
+
+    fn allow(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        self.tokens = (self.tokens + now.duration_since(self.updated).as_secs_f64() * Self::RATE)
+            .min(Self::BURST);
+        self.updated = now;
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
+}
+
 async fn handle_socket(game: AppState, socket: WebSocket) {
+    const OUTBOUND_QUEUE_CAPACITY: usize = 256;
+    const MAX_BUFFERED_INBOUND: usize = 256 * 1024;
+    const MAX_FRAMES_PER_MESSAGE: usize = 128;
+    const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
     let babonet_id = {
         let g = game.read().await;
         g.alloc_babonet_id()
@@ -272,7 +348,7 @@ async fn handle_socket(game: AppState, socket: WebSocket) {
     let ip = "127.0.0.1".to_string();
 
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(OUTBOUND_QUEUE_CAPACITY);
 
     {
         let mut g = game.write().await;
@@ -293,20 +369,54 @@ async fn handle_socket(game: AppState, socket: WebSocket) {
     });
 
     let mut buf = Vec::new();
-    while let Some(msg) = ws_rx.next().await {
+    let mut movement_budget = MovementBudget::new();
+    let handshake_deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+    'socket: loop {
+        let authenticated = {
+            let g = game.read().await;
+            g.find_slot_by_babonet(babonet_id)
+                .and_then(|slot| g.players[slot].as_ref())
+                .is_some_and(|player| player.handshake_done)
+        };
+        let msg = if authenticated {
+            ws_rx.next().await
+        } else {
+            match tokio::time::timeout_at(handshake_deadline, ws_rx.next()).await {
+                Ok(message) => message,
+                Err(_) => {
+                    tracing::warn!(babonet_id, "handshake timed out");
+                    break;
+                }
+            }
+        };
+        let Some(msg) = msg else { break };
         match msg {
             Ok(Message::Binary(data)) => {
+                if buf.len().saturating_add(data.len()) > MAX_BUFFERED_INBOUND {
+                    tracing::warn!(babonet_id, "inbound buffer limit exceeded");
+                    break;
+                }
                 buf.extend_from_slice(&data);
+                let mut frames_in_message = 0usize;
+                let mut decoded = Vec::new();
                 loop {
-                    match packet::decode_frame(&buf) {
+                    match take_complete_frame(&mut buf) {
                         Ok(Some(frame)) => {
-                            let total = 4 + frame.payload.len();
-                            buf.drain(..total);
-                            let mut g = game.write().await;
-                            g.handle_frame(babonet_id, frame.type_id, &frame.payload);
+                            frames_in_message += 1;
+                            if frames_in_message > 4096 {
+                                tracing::warn!(babonet_id, "excessive frame batch rejected");
+                                break 'socket;
+                            }
+                            decoded.push(frame);
                         }
                         Ok(None) => break,
                         Err(PacketError::Incomplete { .. }) => break,
+                    }
+                }
+                for (index, frame) in coalesce_movement_frames(decoded).into_iter().enumerate() {
+                    dispatch_client_frame(&game, babonet_id, &mut movement_budget, frame).await;
+                    if (index + 1).is_multiple_of(MAX_FRAMES_PER_MESSAGE) {
+                        tokio::task::yield_now().await;
                     }
                 }
             }
@@ -317,4 +427,64 @@ async fn handle_socket(game: AppState, socket: WebSocket) {
 
     forward.abort();
     game.write().await.disconnect_babonet(babonet_id);
+}
+
+#[cfg(test)]
+mod websocket_flow_tests {
+    use super::{coalesce_movement_frames, take_complete_frame, MovementBudget};
+
+    #[test]
+    fn movement_budget_allows_small_jitter_burst_then_sheds_flood() {
+        let mut budget = MovementBudget::new();
+        for _ in 0..12 {
+            assert!(budget.allow());
+        }
+        assert!(!budget.allow());
+    }
+
+    #[test]
+    fn complete_tail_frames_do_not_wait_for_another_websocket_message() {
+        let frame = crate::net::packet::encode_frame(crate::net::ids::NET_CLSV_PONG, &[1]);
+        for count in [128, 129, 257] {
+            let mut buf = frame.repeat(count);
+            let mut drained = 0;
+            while take_complete_frame(&mut buf).unwrap().is_some() {
+                drained += 1;
+            }
+            assert_eq!(drained, count);
+            assert!(buf.is_empty());
+        }
+
+        let mut fragmented = frame.clone();
+        fragmented.extend_from_slice(&frame[..3]);
+        assert!(take_complete_frame(&mut fragmented).unwrap().is_some());
+        assert!(take_complete_frame(&mut fragmented).unwrap().is_none());
+        assert_eq!(fragmented, frame[..3]);
+    }
+
+    #[test]
+    fn movement_batches_are_newest_wins_without_reordering_control_frames() {
+        let movement = |marker| crate::net::packet::NetFrame {
+            type_id: crate::net::ids::NET_CLSV_SVCL_PLAYER_COORD_FRAME,
+            payload: vec![marker],
+        };
+        let control = crate::net::packet::NetFrame {
+            type_id: crate::net::ids::NET_CLSV_SVCL_TEAM_REQUEST,
+            payload: vec![9],
+        };
+        let frames = coalesce_movement_frames(vec![
+            movement(1),
+            movement(2),
+            control,
+            movement(3),
+            movement(4),
+        ]);
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[0].payload, [2]);
+        assert_eq!(
+            frames[1].type_id,
+            crate::net::ids::NET_CLSV_SVCL_TEAM_REQUEST
+        );
+        assert_eq!(frames[2].payload, [4]);
+    }
 }
