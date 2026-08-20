@@ -46,7 +46,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           git clone "https://x-access-token:${RELEASE_TOKEN}@github.com/standouthost/clusters.git" clusters
-          sed -i "s/tag: v.*/tag: ${RELEASE_TAG}/" clusters/clusters/k3s.soh.re/applications/babo-dedicated-server*.yaml
+          sed -i "s/tag: v[^,[:space:]]*/tag: ${RELEASE_TAG}/" clusters/clusters/k3s.soh.re/applications/babo-dedicated-server*.yaml
           cd clusters
           git config user.name "babo-dedicated-server-release"
           git config user.email "actions@users.noreply.github.com"
