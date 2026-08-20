@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.2...v0.4.3) (2026-08-20)
+
+
+### Bug Fixes
+
+* **server:** harden authoritative multiplayer state ([18c4b68](https://github.com/BaboViolent/babo-dedicated-server/commit/18c4b6864b87cb8db40c81331f39e206b2a657d5))
+
 ## [0.4.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.1...v0.4.2) (2026-08-20)
 
 
