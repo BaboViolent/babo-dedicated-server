@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.3.3...v0.4.0) (2026-08-20)
+
+
+### Features
+
+* **ctf:** expose flag transition diagnostics ([93adcd9](https://github.com/BaboViolent/babo-dedicated-server/commit/93adcd9563352ac80646aeb3831c572b108a809a))
+
 ## [0.3.3](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.3.2...v0.3.3) (2026-08-20)
 
 
