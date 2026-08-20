@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::http::{header, HeaderValue};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
@@ -96,6 +97,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         .route("/info", get(info))
+        .route("/favicon.ico", get(favicon))
         .route("/ws", get(ws_handler))
         .with_state(state);
 
@@ -134,6 +136,22 @@ async fn info(State(game): State<AppState>) -> impl IntoResponse {
         g.config.game_type,
         g.sessions.len(),
         g.config.max_players
+    )
+}
+
+async fn favicon() -> impl IntoResponse {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("image/svg+xml"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=86400"),
+    );
+    (
+        headers,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="29" fill="#101318" stroke="#fff" stroke-width="4"/><path d="M32 7v16M32 41v16M7 32h16M41 32h16" stroke="#e53935" stroke-width="7"/><circle cx="32" cy="32" r="7" fill="#2f80ed"/></svg>"##,
     )
 }
 
