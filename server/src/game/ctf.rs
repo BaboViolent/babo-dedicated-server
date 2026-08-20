@@ -356,7 +356,11 @@ fn reset_match(game: &mut GameServer) {
     game.blue_win = 0;
     game.red_win = 0;
     game.game_time_left = game.config.game_time_limit;
-    game.round_time_left = 600.0;
+    game.round_time_left = if game.config.game_type == GAME_TYPE_SND {
+        crate::game::snd::SND_ROUND_TIME
+    } else {
+        600.0
+    };
     game.round_state = GAME_PLAYING;
     game.round_end_remaining = 0.0;
     game.ctf.reset();
@@ -613,6 +617,20 @@ mod tests {
         game.tick(1.0);
 
         assert_eq!(game.game_time_left, 123.0);
+    }
+
+    #[test]
+    fn champion_map_change_restores_three_minute_round_timer() {
+        let mut game = game();
+        game.config.game_type = GAME_TYPE_SND;
+        game.round_state = GAME_BLUE_WIN;
+        game.round_end_remaining = 0.0;
+        game.round_time_left = 0.0;
+
+        tick_match_lifecycle(&mut game, 0.02);
+
+        assert_eq!(game.round_state, GAME_PLAYING);
+        assert_eq!(game.round_time_left, crate::game::snd::SND_ROUND_TIME);
     }
 
     #[test]
