@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.12](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.11...v0.4.12) (2026-08-20)
+
+
+### Bug Fixes
+
+* **rockets:** delete remotely detonated projectile ([20bf565](https://github.com/BaboViolent/babo-dedicated-server/commit/20bf56567a3a3a3cf809a7813c445ba0ccd47b3e))
+
 ## [0.4.11](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.10...v0.4.11) (2026-08-20)
 
 
