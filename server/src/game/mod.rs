@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::config::{load_map_spawns, MapSpawns, ServerConfig};
@@ -36,6 +37,16 @@ pub const PLAYER_TEAM_BLUE: i8 = 0;
 pub const PLAYER_TEAM_RED: i8 = 1;
 /** Chat addressed to every team (ServerRecv.cpp:562). */
 pub const CHAT_TEAM_ALL: i8 = -2;
+const RECENT_CHAT_LIMIT: usize = 20;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentChat {
+    pub player_id: usize,
+    pub player_name: String,
+    pub message: String,
+    pub at_seconds: f64,
+}
 
 fn wire_player_slot(payload: &[u8]) -> Option<usize> {
     let slot = *payload.first()? as usize;
@@ -203,7 +214,7 @@ impl Player {
             wait_for_pong: false,
             ping_cycle_started: Instant::now(),
             ping_sent_at: None,
-            ping_ms: 33,
+            ping_ms: 0,
             handshake_done: false,
             spawned_once: false,
             is_bot: false,
@@ -297,6 +308,7 @@ pub struct GameServer {
     pub ctf: CtfState,
     pub voting_enabled: bool,
     pub vote: VoteState,
+    pub recent_chat: VecDeque<RecentChat>,
     started: Instant,
 }
 
@@ -375,6 +387,7 @@ impl GameServer {
                 )
             }),
             vote: VoteState::default(),
+            recent_chat: VecDeque::with_capacity(RECENT_CHAT_LIMIT),
             started: Instant::now(),
         };
         spawn_initial_bots(&mut server);
@@ -690,11 +703,6 @@ impl GameServer {
                 {
                     Some(player.babonet_id)
                 } else {
-                    if player.wait_for_pong {
-                        if let Some(wait) = pong_wait {
-                            player.ping_ms = duration_ms_i16(wait);
-                        }
-                    }
                     None
                 }
             };
@@ -1171,6 +1179,25 @@ impl GameServer {
                 // ServerRecv.cpp:562 — -2 goes to everyone, any other value is that team only.
                 let team = payload[0] as i8;
                 if team == CHAT_TEAM_ALL {
+                    if let Some(player) = self
+                        .players
+                        .iter()
+                        .flatten()
+                        .find(|player| player.babonet_id == babonet_id)
+                    {
+                        let message = packet::read_str(payload, 1, 130);
+                        if !message.is_empty() {
+                            if self.recent_chat.len() == RECENT_CHAT_LIMIT {
+                                self.recent_chat.pop_front();
+                            }
+                            self.recent_chat.push_back(RecentChat {
+                                player_id: player.slot,
+                                player_name: player.name.clone(),
+                                message,
+                                at_seconds: self.uptime_secs(),
+                            });
+                        }
+                    }
                     self.broadcast(frame);
                 } else {
                     for p in self.players.iter().flatten() {

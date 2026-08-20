@@ -54,7 +54,10 @@ Open `http://localhost:3000` → Multiplayer → Connect → host `127.0.0.1`, p
 
 Health: `curl http://localhost:8080/health`
 
-Info JSON: `curl http://localhost:8080/info`
+Info JSON: `curl http://localhost:8080/info`. The response includes match and
+round timers, team scores, the live scoreboard with measured ping and combat
+statistics, and the 20 most recent public chat messages. Team chat is never
+published by this endpoint.
 
 WebSocket: `ws://localhost:8080/ws`
 

@@ -13,6 +13,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use tokio::sync::{mpsc, RwLock};
 use tracing_subscriber::EnvFilter;
 
@@ -129,14 +130,98 @@ async fn health(State(game): State<AppState>) -> impl IntoResponse {
 
 async fn info(State(game): State<AppState>) -> impl IntoResponse {
     let g = game.read().await;
-    format!(
-        "{{\"name\":\"{}\",\"map\":\"{}\",\"gameType\":{},\"players\":{},\"maxPlayers\":{}}}\n",
-        g.config.game_name,
-        g.config.map_name,
-        g.config.game_type,
-        g.sessions.len(),
-        g.config.max_players
-    )
+    axum::Json(server_info(&g))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InfoPlayer {
+    id: usize,
+    name: String,
+    team: i8,
+    status: i8,
+    bot: bool,
+    ping: i16,
+    kills: i16,
+    deaths: i16,
+    score: i16,
+    returns: i16,
+    flag_attempts: i16,
+    damage: i16,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InfoTimer {
+    game_time_left: f32,
+    round_time_left: f32,
+    round_state: i8,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InfoScore {
+    blue: i16,
+    red: i16,
+    blue_wins: i16,
+    red_wins: i16,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerInfo {
+    name: String,
+    map: String,
+    game_type: i8,
+    players: usize,
+    max_players: usize,
+    timer: InfoTimer,
+    team_score: InfoScore,
+    scoreboard: Vec<InfoPlayer>,
+    recent_chat: Vec<crate::game::RecentChat>,
+}
+
+fn server_info(game: &GameServer) -> ServerInfo {
+    let scoreboard: Vec<_> = game
+        .players
+        .iter()
+        .flatten()
+        .filter(|player| player.handshake_done || player.is_bot)
+        .map(|player| InfoPlayer {
+            id: player.slot,
+            name: player.name.clone(),
+            team: player.team_id,
+            status: player.status,
+            bot: player.is_bot,
+            ping: player.ping_ms,
+            kills: player.kills,
+            deaths: player.deaths,
+            score: player.score,
+            returns: player.returns,
+            flag_attempts: player.flag_attempts,
+            damage: player.damage,
+        })
+        .collect();
+    ServerInfo {
+        name: game.config.game_name.clone(),
+        map: game.config.map_name.clone(),
+        game_type: game.config.game_type,
+        players: scoreboard.len(),
+        max_players: game.config.max_players,
+        timer: InfoTimer {
+            game_time_left: game.game_time_left,
+            round_time_left: game.round_time_left,
+            round_state: game.round_state,
+        },
+        team_score: InfoScore {
+            blue: game.blue_score,
+            red: game.red_score,
+            blue_wins: game.blue_win,
+            red_wins: game.red_win,
+        },
+        scoreboard,
+        recent_chat: game.recent_chat.iter().cloned().collect(),
+    }
 }
 
 async fn favicon() -> impl IntoResponse {
