@@ -866,7 +866,10 @@ mod tests {
         let scatter = reflect(incoming.map(|v| v * 0.5), floor_normal);
 
         assert_eq!(scatter, [1.5, 0.5, 1.0]);
-        assert!(scatter[2] > 0.0, "moving flame must leave the impact surface");
+        assert!(
+            scatter[2] > 0.0,
+            "moving flame must leave the impact surface"
+        );
     }
 
     #[test]
