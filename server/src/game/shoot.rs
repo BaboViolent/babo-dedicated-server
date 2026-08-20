@@ -687,7 +687,20 @@ fn apply_damage_from(
     game.broadcast(packet::encode_frame(ids::NET_SVCL_PLAYER_HIT, &hit));
 
     if life_left <= f32::EPSILON {
-        tracing::debug!("player {victim} killed by {attacker_wire} (weapon {weapon_id})");
+        let position = game.players[victim]
+            .as_ref()
+            .map(|player| player.cf.position)
+            .unwrap_or([0.0; 3]);
+        tracing::info!(
+            victim,
+            attacker = attacker_wire,
+            weapon = weapon_id,
+            life_before,
+            x = position[0],
+            y = position[1],
+            z = position[2],
+            "player killed"
+        );
         if let Some(victim_player) = game.players[victim].as_ref() {
             let position = victim_player.cf.position;
             let velocity = victim_player.cf.vel;
