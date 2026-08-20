@@ -2,7 +2,7 @@ FROM --platform=$BUILDPLATFORM rust:1-bookworm AS builder
 ARG TARGETARCH
 WORKDIR /build
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu \
+    && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
     && rm -rf /var/lib/apt/lists/* \
     && rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
