@@ -533,6 +533,7 @@ pub fn handle_player_shoot(game: &mut GameServer, shooter: usize, payload: &[u8]
     let (wall_end, normal) = game.map_grid.ray_test(p1, p2);
     let wall_t = segment_hit_t(p1, p2, wall_end);
     let mut hit_id: i8 = -1;
+    let mut blocker_id: i8 = -1;
     let mut best_t = f32::MAX;
     let mut flame_hits = Vec::new();
 
@@ -546,7 +547,9 @@ pub fn handle_player_shoot(game: &mut GameServer, shooter: usize, payload: &[u8]
         if target.status != PLAYER_STATUS_ALIVE {
             continue;
         }
-        if !can_damage(game.config.game_type, shooter, slot, game) {
+        if weapon_id == WEAPON_FLAME_THROWER
+            && !can_damage(game.config.game_type, shooter, slot, game)
+        {
             continue;
         }
         let pos = target.cf.position;
@@ -562,7 +565,12 @@ pub fn handle_player_shoot(game: &mut GameServer, shooter: usize, payload: &[u8]
                 flame_hits.push(slot);
             } else if t <= wall_t + 1e-3 && t < best_t {
                 best_t = t;
-                hit_id = slot as i8;
+                blocker_id = slot as i8;
+                hit_id = if can_damage(game.config.game_type, shooter, slot, game) {
+                    slot as i8
+                } else {
+                    -1
+                };
             }
         }
     }
@@ -585,7 +593,7 @@ pub fn handle_player_shoot(game: &mut GameServer, shooter: usize, payload: &[u8]
         }
     }
 
-    let end = if weapon_id != WEAPON_FLAME_THROWER && hit_id >= 0 && best_t < f32::MAX {
+    let end = if weapon_id != WEAPON_FLAME_THROWER && blocker_id >= 0 && best_t < f32::MAX {
         [
             p1[0] + (p2[0] - p1[0]) * best_t,
             p1[1] + (p2[1] - p1[1]) * best_t,
@@ -1267,6 +1275,61 @@ mod tests {
         assert!(game.players[0].as_ref().unwrap().life < 1.0);
         assert_eq!(game.players[1].as_ref().unwrap().life, 1.0);
         assert!(game.players[2].as_ref().unwrap().life < 1.0);
+    }
+
+    #[test]
+    fn teammate_blocks_direct_fire_without_taking_damage() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: crate::game::ctf::GAME_TYPE_CTF,
+            max_players: 3,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 15.0 * 60.0,
+        });
+        game.map_grid = crate::map::MapGrid::fixture(8, &[]);
+        let from = [2.5, 2.5, 0.25];
+        let endpoint = spread_endpoint(from, [1.0, 0.0, 0.0], 128.0, 3.0, 1);
+        let direction = [
+            endpoint[0] - from[0],
+            endpoint[1] - from[1],
+            endpoint[2] - from[2],
+        ];
+        let length = direction[0].hypot(direction[1]).hypot(direction[2]);
+
+        for (slot, team, distance) in [
+            (0, PLAYER_TEAM_BLUE, 0.0),
+            (1, PLAYER_TEAM_BLUE, 0.6),
+            (2, PLAYER_TEAM_RED, 1.2),
+        ] {
+            let mut player = armed(WEAPON_SMG);
+            player.slot = slot;
+            player.team_id = team;
+            player.status = PLAYER_STATUS_ALIVE;
+            player.spawn_immunity_remaining = 0.0;
+            player.cf.position = [
+                from[0] + direction[0] / length * distance,
+                from[1] + direction[1] / length * distance,
+                from[2] + direction[2] / length * distance,
+            ];
+            game.players[slot] = Some(player);
+        }
+
+        let mut payload = [0u8; 16];
+        payload[1] = WEAPON_SMG as u8;
+        payload[4..6].copy_from_slice(&((from[0] * ids::WIRE_POS) as i16).to_le_bytes());
+        payload[6..8].copy_from_slice(&((from[1] * ids::WIRE_POS) as i16).to_le_bytes());
+        payload[8..10].copy_from_slice(&((from[2] * ids::WIRE_POS) as i16).to_le_bytes());
+        payload[10..12].copy_from_slice(&(ids::WIRE_POS as i16).to_le_bytes());
+        handle_player_shoot(&mut game, 0, &payload);
+
+        assert_eq!(game.players[1].as_ref().unwrap().life, 1.0);
+        assert_eq!(game.players[2].as_ref().unwrap().life, 1.0);
     }
 
     #[test]
