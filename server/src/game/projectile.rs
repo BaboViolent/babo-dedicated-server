@@ -860,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn molotov_scatter_reflects_incoming_velocity_once() {
+    fn molotov_scatter_leaves_impact_surface_after_single_reflection() {
         let incoming = [3.0, 1.0, -2.0];
         let floor_normal = [0.0, 0.0, 1.0];
         let scatter = reflect(incoming.map(|v| v * 0.5), floor_normal);
