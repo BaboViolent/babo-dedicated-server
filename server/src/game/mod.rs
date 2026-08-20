@@ -44,6 +44,14 @@ fn is_advertised_map(map_list: &[String], name: &str) -> bool {
     map_list.iter().any(|advertised| advertised == name)
 }
 
+fn map_allowed_for_game_type(game_type: i8, name: &str) -> bool {
+    if game_type == GAME_TYPE_SND {
+        name.starts_with("CHP-")
+    } else {
+        !name.starts_with("CHP-")
+    }
+}
+
 fn valid_player_team(team: i8) -> bool {
     matches!(
         team,
@@ -705,6 +713,9 @@ impl GameServer {
             .unwrap_or(0);
         for offset in 1..=self.map_list.len() {
             let name = self.map_list[(current + offset) % self.map_list.len()].clone();
+            if !map_allowed_for_game_type(self.config.game_type, &name) {
+                continue;
+            }
             let path = self.config.map_path(&name);
             let Ok(spawns) = load_map_spawns(&path) else {
                 continue;
@@ -1323,8 +1334,9 @@ fn write_ip16(buf: &mut [u8], ip: &str) {
 #[cfg(test)]
 mod movement_authority_tests {
     use super::{
-        bound_client_movement, is_advertised_map, valid_player_team, wire_player_slot, GameServer,
-        Player, GAME_TYPE_CTF, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
+        bound_client_movement, is_advertised_map, map_allowed_for_game_type, valid_player_team,
+        wire_player_slot, GameServer, Player, GAME_TYPE_CTF, GAME_TYPE_SND, PLAYER_TEAM_BLUE,
+        PLAYER_TEAM_RED,
     };
     use crate::config::ServerConfig;
     use crate::map::MapGrid;
@@ -1348,6 +1360,17 @@ mod movement_authority_tests {
         assert!(!is_advertised_map(&maps, "../bv2.cfg"));
         assert!(!is_advertised_map(&maps, "/etc/passwd"));
         assert!(!is_advertised_map(&maps, "CTF-Alert.bvm"));
+    }
+
+    #[test]
+    fn champion_maps_are_isolated_to_champion_rotation() {
+        for game_type in [0, 1, GAME_TYPE_CTF] {
+            assert!(!map_allowed_for_game_type(game_type, "CHP-Lava"));
+            assert!(map_allowed_for_game_type(game_type, "DM-Field"));
+        }
+        assert!(map_allowed_for_game_type(GAME_TYPE_SND, "CHP-Lava"));
+        assert!(!map_allowed_for_game_type(GAME_TYPE_SND, "DM-Field"));
+        assert!(!map_allowed_for_game_type(GAME_TYPE_SND, "CTF-Alert"));
     }
 
     #[test]
