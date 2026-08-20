@@ -97,6 +97,7 @@ mod tests {
             game_type: GAME_TYPE_SND,
             max_players: 8,
             bot_count: 0,
+            score_limit: 50,
             win_limit: 7,
             game_time_limit: 900.0,
         });

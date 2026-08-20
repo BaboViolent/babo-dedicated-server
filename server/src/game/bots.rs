@@ -2126,6 +2126,7 @@ mod tests {
             game_type: GAME_TYPE_CTF,
             max_players: 8,
             bot_count: 6,
+            score_limit: 50,
             win_limit: 7,
             game_time_limit: 900.0,
         });
@@ -2533,6 +2534,7 @@ mod tests {
             game_type: GAME_TYPE_CTF,
             max_players: 2,
             bot_count: 2,
+            score_limit: 50,
             win_limit: 7,
             game_time_limit: 15.0 * 60.0,
         });
@@ -2561,6 +2563,7 @@ mod tests {
             game_type: GAME_TYPE_CTF,
             max_players: 1,
             bot_count: 1,
+            score_limit: 50,
             win_limit: 7,
             game_time_limit: 15.0 * 60.0,
         });

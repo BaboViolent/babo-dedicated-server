@@ -306,13 +306,26 @@ fn respawn_all_players(game: &mut GameServer) {
 pub fn tick_match_lifecycle(game: &mut GameServer, dt: f32) {
     let mut just_finished = false;
     if game.round_state == GAME_PLAYING {
-        let scores = if game.config.game_type == GAME_TYPE_CTF {
-            (game.blue_win, game.red_win)
-        } else {
-            (game.blue_score, game.red_score)
+        let scores = match game.config.game_type {
+            GAME_TYPE_CTF => (game.blue_win, game.red_win),
+            1 => (game.blue_score, game.red_score),
+            _ => {
+                let high_score = game
+                    .players
+                    .iter()
+                    .flatten()
+                    .map(|p| p.score)
+                    .max()
+                    .unwrap_or(0);
+                (high_score, 0)
+            }
         };
-        let reached_limit = game.config.win_limit > 0
-            && (scores.0 >= game.config.win_limit || scores.1 >= game.config.win_limit);
+        let limit = if game.config.game_type == GAME_TYPE_CTF {
+            game.config.win_limit
+        } else {
+            game.config.score_limit
+        };
+        let reached_limit = limit > 0 && (scores.0 >= limit || scores.1 >= limit);
         let timed_out = game.config.game_time_limit > 0.0 && game.game_time_left <= 0.0;
         if reached_limit || timed_out {
             let state = if scores.0 == scores.1 {
@@ -439,6 +452,7 @@ mod tests {
             game_type: GAME_TYPE_CTF,
             max_players: 2,
             bot_count: 0,
+            score_limit: 50,
             win_limit: 1,
             game_time_limit: 15.0 * 60.0,
         })
@@ -567,6 +581,38 @@ mod tests {
 
         assert_eq!(game.round_state, GAME_DRAW);
         assert_eq!(game.round_end_remaining, MATCH_END_DELAY);
+    }
+
+    #[test]
+    fn deathmatch_modes_use_the_classic_fifty_point_score_limit() {
+        let mut tdm = game();
+        tdm.config.game_type = 1;
+        tdm.blue_score = 49;
+        tick_match_lifecycle(&mut tdm, 0.02);
+        assert_eq!(tdm.round_state, GAME_PLAYING);
+        tdm.blue_score = 50;
+        tick_match_lifecycle(&mut tdm, 0.02);
+        assert_eq!(tdm.round_state, GAME_BLUE_WIN);
+
+        let mut ffa = game();
+        ffa.config.game_type = 0;
+        let mut leader = Player::new(0, 1, "leader".into());
+        leader.score = 50;
+        ffa.players[0] = Some(leader);
+        tick_match_lifecycle(&mut ffa, 0.02);
+        assert_ne!(ffa.round_state, GAME_PLAYING);
+    }
+
+    #[test]
+    fn game_clock_stops_during_match_end_intermission() {
+        let mut game = game();
+        game.round_state = GAME_BLUE_WIN;
+        game.round_end_remaining = MATCH_END_DELAY;
+        game.game_time_left = 123.0;
+
+        game.tick(1.0);
+
+        assert_eq!(game.game_time_left, 123.0);
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub struct ServerConfig {
     pub game_type: i8,
     pub max_players: usize,
     pub bot_count: usize,
+    pub score_limit: i16,
     pub win_limit: i16,
     /// Seconds; zero means unlimited.
     pub game_time_limit: f32,
@@ -46,6 +47,11 @@ impl ServerConfig {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(2)
                 .min(32),
+            score_limit: std::env::var("BV2_SCORE_LIMIT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(50)
+                .max(0),
             win_limit: std::env::var("BV2_WIN_LIMIT")
                 .ok()
                 .and_then(|s| s.parse().ok())

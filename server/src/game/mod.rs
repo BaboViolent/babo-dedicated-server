@@ -537,7 +537,7 @@ impl GameServer {
 
     pub fn tick(&mut self, dt: f32) {
         self.frame_id += 1;
-        if self.config.game_time_limit > 0.0 {
+        if self.round_state == GAME_PLAYING && self.config.game_time_limit > 0.0 {
             self.game_time_left = (self.game_time_left - dt).max(0.0);
         }
         self.round_time_left = (self.round_time_left - dt).max(0.0);
@@ -1369,6 +1369,7 @@ mod movement_authority_tests {
             game_type: GAME_TYPE_CTF,
             max_players: 8,
             bot_count: 0,
+            score_limit: 50,
             win_limit: 7,
             game_time_limit: 900.0,
         });
@@ -1391,6 +1392,7 @@ mod movement_authority_tests {
             game_type: GAME_TYPE_CTF,
             max_players: 8,
             bot_count: 0,
+            score_limit: 50,
             win_limit: 7,
             game_time_limit: 900.0,
         });

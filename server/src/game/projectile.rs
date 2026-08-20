@@ -872,6 +872,7 @@ mod tests {
             game_type: 0,
             max_players: 2,
             bot_count: 0,
+            score_limit: 50,
             win_limit: 7,
             game_time_limit: 15.0 * 60.0,
         };
@@ -925,6 +926,7 @@ mod tests {
             game_type: 0,
             max_players: 2,
             bot_count: 0,
+            score_limit: 50,
             win_limit: 7,
             game_time_limit: 15.0 * 60.0,
         };
@@ -961,6 +963,7 @@ mod tests {
             game_type: 0,
             max_players: 2,
             bot_count: 0,
+            score_limit: 50,
             win_limit: 7,
             game_time_limit: 15.0 * 60.0,
         };
@@ -1001,6 +1004,7 @@ mod tests {
             game_type: 0,
             max_players: 2,
             bot_count: 0,
+            score_limit: 50,
             win_limit: 7,
             game_time_limit: 15.0 * 60.0,
         };
