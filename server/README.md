@@ -88,6 +88,7 @@ verdict.
 | `BV2_PASSWORD` | *(empty)* | Join password |
 | `BV2_MAX_PLAYERS` | `16` | Max clients (≤32) |
 | `BV2_BOTS` | `2` | Debug bots spawned at startup (0 to disable) |
+| `BV2_ENABLE_VOTE` | `false` | Allow votes for advertised maps and game modes |
 | `BV2_WIN_LIMIT` | `7` | CTF captures required to win (`0` = unlimited) |
 | `BV2_BOT_SIM_SEED` | `1` | Deterministic bot-simulation run identifier |
 | `BV2_BOT_SIM_TICKS` | `3000` | Headless bot-simulation duration in ticks |
@@ -133,5 +134,5 @@ VirtualService to this Service (long-lived WebSocket timeouts). Use
 ## Not yet ported
 
 - Pickups and dropped-item projectile entities
-- Admin, voting, master listing
+- Admin and master listing
 - Native client interop (TCP BaboNet)

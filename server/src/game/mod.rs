@@ -15,12 +15,14 @@ mod ctf;
 mod projectile;
 mod shoot;
 mod snd;
+mod voting;
 
 pub use bots::{
     bot_scenario_summary, configure_bot_scenario, reconcile_bot_roster, spawn_initial_bots,
     tick_bots, BotBrain,
 };
 pub use ctf::{send_flag_enum_to, CtfState, GAME_TYPE_CTF};
+pub use voting::VoteState;
 
 pub const MAX_PLAYER: usize = 32;
 pub const TICK_MS: u64 = 20;
@@ -49,6 +51,18 @@ fn map_allowed_for_game_type(game_type: i8, name: &str) -> bool {
         name.starts_with("CHP-")
     } else {
         !name.starts_with("CHP-")
+    }
+}
+
+fn map_compatible_for_game_type(game_type: i8, spawns: &MapSpawns) -> bool {
+    match game_type {
+        GAME_TYPE_CTF => {
+            spawns.flag_pod.iter().all(|pod| *pod != [0.0; 3])
+                && !spawns.blue.is_empty()
+                && !spawns.red.is_empty()
+        }
+        1 => !spawns.blue.is_empty() && !spawns.red.is_empty(),
+        _ => !spawns.dm.is_empty(),
     }
 }
 
@@ -281,6 +295,8 @@ pub struct GameServer {
     pub projectiles: Vec<projectile::ServerProjectile>,
     pub next_projectile_id: i32,
     pub ctf: CtfState,
+    pub voting_enabled: bool,
+    pub vote: VoteState,
     started: Instant,
 }
 
@@ -352,6 +368,13 @@ impl GameServer {
             projectiles: Vec::new(),
             next_projectile_id: 1,
             ctf: ctf_state,
+            voting_enabled: std::env::var("BV2_ENABLE_VOTE").is_ok_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            }),
+            vote: VoteState::default(),
             started: Instant::now(),
         };
         spawn_initial_bots(&mut server);
@@ -587,6 +610,7 @@ impl GameServer {
             snd::tick_snd(self);
         }
         ctf::tick_match_lifecycle(self, dt);
+        voting::tick_vote(self, dt);
 
         for slot in 0..MAX_PLAYER {
             if let Some(p) = self.players[slot].as_mut() {
@@ -732,16 +756,7 @@ impl GameServer {
             let Ok(spawns) = load_map_spawns(&path) else {
                 continue;
             };
-            let compatible = match self.config.game_type {
-                GAME_TYPE_CTF => {
-                    spawns.flag_pod.iter().all(|pod| *pod != [0.0; 3])
-                        && !spawns.blue.is_empty()
-                        && !spawns.red.is_empty()
-                }
-                1 => !spawns.blue.is_empty() && !spawns.red.is_empty(),
-                _ => !spawns.dm.is_empty(),
-            };
-            if !compatible {
+            if !map_compatible_for_game_type(self.config.game_type, &spawns) {
                 continue;
             }
             let Ok(grid) = MapGrid::load(&path) else {
@@ -1165,6 +1180,10 @@ impl GameServer {
                     }
                 }
             }
+            ids::NET_CLSV_SVCL_VOTE_REQUEST => {
+                voting::handle_vote_request(self, babonet_id, payload)
+            }
+            ids::NET_CLSV_VOTE => voting::handle_vote(self, babonet_id, payload),
             ids::NET_CLSV_MAP_LIST_REQUEST => {
                 for name in &self.map_list {
                     self.send_to(babonet_id, packet::map_list(name));

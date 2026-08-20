@@ -351,6 +351,10 @@ pub fn tick_match_lifecycle(game: &mut GameServer, dt: f32) {
 
 fn reset_match(game: &mut GameServer) {
     game.rotate_to_next_map();
+    restart_match(game);
+}
+
+pub(crate) fn restart_match(game: &mut GameServer) {
     game.blue_score = 0;
     game.red_score = 0;
     game.blue_win = 0;
