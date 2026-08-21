@@ -28,12 +28,6 @@ const WEAPON_KNIVES: i8 = 10;
 const WEAPON_NUCLEAR: i8 = 11;
 const WEAPON_SHIELD: i8 = 12;
 const WEAPON_MOLOTOV: i8 = 9;
-const FLAME_STACK_MAX: u8 = 3;
-const FLAME_STACK_TIME: f32 = 1.75;
-const FLAME_STACK_DAMAGE_BONUS: f32 = 0.25;
-const FLAME_KILL_STREAK_MAX: u8 = 3;
-const FLAME_KILL_STREAK_TIME: f32 = 4.0;
-const FLAME_KILL_STREAK_DAMAGE_BONUS: f32 = 0.20;
 
 /// Maximum plausible distance from the authoritative player centre to a weapon
 /// dummy. The shipped models place every muzzle well inside this bound.
@@ -211,13 +205,6 @@ pub(super) fn apply_server_burn(
 ) {
     let weapon_id = 9;
     let base_dmg = weapon_damage(weapon_id);
-    let attacker_streak = game
-        .players
-        .get(owner)
-        .and_then(Option::as_ref)
-        .map(|p| p.molotov_kill_streak)
-        .unwrap_or(0);
-    let attacker_multiplier = 1.0 + (attacker_streak as f32) * FLAME_KILL_STREAK_DAMAGE_BONUS;
     for slot in 0..MAX_PLAYER {
         let Some(target) = game.players[slot].as_ref() else {
             continue;
@@ -243,19 +230,16 @@ pub(super) fn apply_server_burn(
             + (wall_end[2] - position[2]).powi(2))
         .sqrt();
         if wall_d + 0.01 >= d {
-            if let Some(victim) = game.players[slot].as_mut() {
-                let stack_scale =
-                    1.0 + (victim.flame_burn_stacks as f32) * FLAME_STACK_DAMAGE_BONUS;
-                victim.flame_burn_stacks = (victim.flame_burn_stacks + 1).min(FLAME_STACK_MAX);
-                victim.flame_stack_decay = FLAME_STACK_TIME;
-                apply_damage(
-                    game,
-                    slot,
-                    owner,
-                    weapon_id,
-                    base_dmg * radial_falloff(d, radius) * stack_scale * attacker_multiplier,
-                );
-            }
+            // GameProjectile.cpp calls radiusHit independently for every flame.
+            // Overlapping flames add identical ticks; damage never ramps from
+            // prior burns or kills.
+            apply_damage(
+                game,
+                slot,
+                owner,
+                weapon_id,
+                base_dmg * radial_falloff(d, radius),
+            );
         }
     }
 }
@@ -738,15 +722,6 @@ fn apply_damage_from(
                 victim_weapon_id,
                 grenades,
             );
-        }
-        if let Some(attacker) =
-            attacker.filter(|&slot| weapon_id == WEAPON_MOLOTOV && slot != victim)
-        {
-            if let Some(attacker_player) = game.players[attacker].as_mut() {
-                attacker_player.molotov_kill_streak =
-                    (attacker_player.molotov_kill_streak + 1).min(FLAME_KILL_STREAK_MAX);
-                attacker_player.molotov_kill_streak_decay = FLAME_KILL_STREAK_TIME;
-            }
         }
         crate::game::ctf::drop_carrier_flags(game, victim);
         if let Some(v) = game.players[victim].as_mut() {
@@ -1425,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn molotov_burn_stacks_increase_damage_per_tick() {
+    fn overlapping_molotov_flames_deal_independent_native_ticks() {
         let mut game = GameServer::new(ServerConfig {
             bind_addr: "127.0.0.1:0".into(),
             content_root: PathBuf::from("../Content/main"),
@@ -1461,12 +1436,11 @@ mod tests {
         let second_life = game.players[1].as_ref().unwrap().life;
 
         assert!((first_life - 0.85).abs() < 1e-5);
-        assert!((second_life - 0.6625).abs() < 1e-4);
-        assert_eq!(game.players[1].as_ref().unwrap().flame_burn_stacks, 2);
+        assert!((second_life - 0.70).abs() < 1e-5);
     }
 
     #[test]
-    fn molotov_kill_awards_burning_streak_to_attacker() {
+    fn molotov_kill_does_not_boost_the_next_flame_tick() {
         let mut game = GameServer::new(ServerConfig {
             bind_addr: "127.0.0.1:0".into(),
             content_root: PathBuf::from("../Content/main"),
@@ -1498,8 +1472,6 @@ mod tests {
         game.players[1] = Some(victim);
 
         apply_server_burn(&mut game, [5.5, 5.5, 0.25], 0.5, 0);
-        assert_eq!(game.players[0].as_ref().unwrap().molotov_kill_streak, 1);
-        assert!(game.players[0].as_ref().unwrap().molotov_kill_streak_decay > 0.0);
         assert!(game.players[1].as_ref().unwrap().status == PLAYER_STATUS_DEAD);
 
         let mut second_victim = armed(WEAPON_SMG);
@@ -1512,7 +1484,7 @@ mod tests {
         game.players[1] = Some(second_victim);
         apply_server_burn(&mut game, [5.5, 5.5, 0.25], 0.5, 0);
 
-        assert!((game.players[1].as_ref().unwrap().life - 0.32).abs() < 1e-4);
+        assert!((game.players[1].as_ref().unwrap().life - 0.35).abs() < 1e-5);
     }
 
     #[test]

@@ -174,10 +174,6 @@ pub struct Player {
     pub grenade_elapsed: f32,
     pub molotov_elapsed: f32,
     pub melee_elapsed: f32,
-    pub flame_burn_stacks: u8,
-    pub flame_stack_decay: f32,
-    pub molotov_kill_streak: u8,
-    pub molotov_kill_streak_decay: f32,
     pub protection_remaining: f32,
     pub spawn_immunity_remaining: f32,
     pub nuke_remaining: f32,
@@ -239,10 +235,6 @@ impl Player {
             grenade_elapsed: f32::INFINITY,
             molotov_elapsed: f32::INFINITY,
             melee_elapsed: f32::INFINITY,
-            flame_burn_stacks: 0,
-            flame_stack_decay: 0.0,
-            molotov_kill_streak: 0,
-            molotov_kill_streak_decay: 0.0,
             protection_remaining: 0.0,
             spawn_immunity_remaining: 0.0,
             nuke_remaining: 0.0,
@@ -702,18 +694,6 @@ impl GameServer {
                 p.grenade_elapsed = (p.grenade_elapsed + dt).min(60.0);
                 p.molotov_elapsed = (p.molotov_elapsed + dt).min(60.0);
                 p.melee_elapsed = (p.melee_elapsed + dt).min(60.0);
-                if p.flame_stack_decay > 0.0 {
-                    p.flame_stack_decay = (p.flame_stack_decay - dt).max(0.0);
-                    if p.flame_stack_decay == 0.0 {
-                        p.flame_burn_stacks = 0;
-                    }
-                }
-                if p.molotov_kill_streak_decay > 0.0 {
-                    p.molotov_kill_streak_decay = (p.molotov_kill_streak_decay - dt).max(0.0);
-                    if p.molotov_kill_streak_decay == 0.0 {
-                        p.molotov_kill_streak = 0;
-                    }
-                }
                 p.coord_elapsed = (p.coord_elapsed + dt).min(1.0);
                 p.protection_remaining = (p.protection_remaining - dt).max(0.0);
                 p.spawn_immunity_remaining = (p.spawn_immunity_remaining - dt).max(0.0);
@@ -1127,10 +1107,6 @@ impl GameServer {
                 p.grenade_elapsed = f32::INFINITY;
                 p.molotov_elapsed = f32::INFINITY;
                 p.melee_elapsed = f32::INFINITY;
-                p.flame_burn_stacks = 0;
-                p.flame_stack_decay = 0.0;
-                p.molotov_kill_streak = 0;
-                p.molotov_kill_streak_decay = 0.0;
                 p.protection_remaining = 0.0;
                 p.spawn_immunity_remaining = SPAWN_IMMUNITY_TIME;
                 p.nuke_remaining = 0.0;
