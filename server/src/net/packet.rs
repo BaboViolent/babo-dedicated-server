@@ -99,8 +99,8 @@ pub fn change_flag_state(
     revision: u32,
 ) -> Vec<u8> {
     // The original three fields remain in place for legacy clients. Modern
-    // clients consume the appended action instead of inferring return versus
-    // capture from potentially stale local state.
+    // clients consume the appended action and monotonic revision instead of
+    // inferring transitions or accepting stale flag state/position pairs.
     let mut p = [0u8; 8];
     p[0] = flag_id as u8;
     p[1] = new_state as u8;
