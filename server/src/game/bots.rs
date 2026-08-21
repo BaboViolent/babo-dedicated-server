@@ -43,8 +43,6 @@ const UTILITY_RETREAT_HEALTH: f32 = 180.0;
 const BOT_CARRIER_DIRECT_CAPTURE_DISTANCE: f32 = 3.5;
 const BOT_CTF_CARRIER_ESCORT_COUNT: usize = 2;
 const BOT_CTF_MISSING_FLAG_RECOVER_COUNT: usize = 2;
-const BOT_SPAWN_AVOID_RADIUS: f32 = 0.85;
-const BOT_SPAWN_FRIENDLY_PENALTY: f32 = 2.75;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -547,111 +545,6 @@ fn pressure_spawn_goal(spawns: &[[f32; 3]], carrier: [f32; 3], pod: [f32; 3]) ->
         })
         .map(|spawn| [spawn[0], spawn[1]])
         .unwrap_or([pod[0], pod[1]])
-}
-
-fn bot_spawn_points(team_id: i8, spawns: &crate::config::MapSpawns) -> &[[f32; 3]] {
-    if !spawns.dm.is_empty() {
-        &spawns.dm
-    } else {
-        match team_id {
-            PLAYER_TEAM_BLUE if !spawns.blue.is_empty() => &spawns.blue,
-            PLAYER_TEAM_RED if !spawns.red.is_empty() => &spawns.red,
-            _ => &spawns.dm,
-        }
-    }
-}
-
-fn bot_spawn_score(game: &GameServer, slot: usize, team_id: i8, point: [f32; 3]) -> f32 {
-    game.players
-        .iter()
-        .enumerate()
-        .fold(0.0, |score, (other, player)| {
-            let Some(other_player) = player.as_ref() else {
-                return score;
-            };
-            if other == slot || other_player.status != PLAYER_STATUS_ALIVE {
-                return score;
-            }
-            let dx = point[0] - other_player.cf.position[0];
-            let dy = point[1] - other_player.cf.position[1];
-            let distance = dx.hypot(dy).max(0.05);
-            if other_player.team_id == team_id {
-                score - BOT_SPAWN_FRIENDLY_PENALTY / distance
-            } else {
-                score + distance * 0.8
-            }
-        })
-}
-
-fn pick_bot_spawn_point(game: &GameServer, slot: usize, team_id: i8) -> [f32; 3] {
-    let spawn_points = bot_spawn_points(team_id, &game.map_spawns);
-    if spawn_points.is_empty() {
-        return [
-            game.map_grid.size_x() as f32 * 0.5,
-            game.map_grid.size_y() as f32 * 0.5,
-            0.25,
-        ];
-    }
-
-    let mut best = spawn_points[0];
-    let mut best_score = -f32::INFINITY;
-
-    for (idx, spawn) in spawn_points.iter().enumerate() {
-        // Authored spawn points are centered in known-clear map locations.
-        // The former +/-0.45 tile offsets put a 0.25-radius bot directly into
-        // neighboring walls on CTF-Crazy (notably the red outer spawns).
-        let candidate = [spawn[0], spawn[1], 0.25];
-        if !game
-            .map_grid
-            .has_clearance([candidate[0], candidate[1]], PLAYER_RADIUS)
-        {
-            continue;
-        }
-        let mut score = bot_spawn_score(game, slot, team_id, candidate);
-        let density_penalty =
-            game.players
-                .iter()
-                .enumerate()
-                .fold(0.0, |acc, (other, other_player)| {
-                    let Some(other_player) = other_player.as_ref() else {
-                        return acc;
-                    };
-                    if other_player.status != PLAYER_STATUS_ALIVE
-                        || other_player.team_id != team_id
-                        || other == slot
-                    {
-                        return acc;
-                    }
-                    let d = (candidate[0] - other_player.cf.position[0])
-                        .hypot(candidate[1] - other_player.cf.position[1]);
-                    if d < 0.08 {
-                        acc + 50.0
-                    } else if d < BOT_SPAWN_AVOID_RADIUS {
-                        acc + (BOT_SPAWN_AVOID_RADIUS - d) * 6.0
-                    } else {
-                        acc
-                    }
-                });
-        score -= density_penalty;
-        let tie = (slot as f32 + idx as f32 * 0.13) * 1e-4;
-        if score + tie > best_score {
-            best_score = score + tie;
-            best = candidate;
-        }
-    }
-
-    if best_score == -f32::INFINITY {
-        return [spawn_points[0][0], spawn_points[0][1], 0.25];
-    }
-
-    tracing::debug!(
-        "bot spawn select slot={} team={} point=({}, {})",
-        slot,
-        team_id,
-        best[0],
-        best[1],
-    );
-    best
 }
 
 fn safer_carrier_goal(
@@ -1966,7 +1859,9 @@ impl GameServer {
         p.green_decal = gd;
         p.blue_decal = bd;
 
-        let pos = pick_bot_spawn_point(self, slot, team_id);
+        // Bots are server-owned players, so use the same native GameSpawn.cpp
+        // maximin rule as humans: maximize distance from the nearest live enemy.
+        let pos = self.pick_spawn_for(team_id, Some(slot));
         p.cf.position = pos;
         p.cf.mouse = [pos[0] + 1.0, pos[1], 0.25];
         p.bot_goal = self
@@ -2024,7 +1919,7 @@ impl GameServer {
         if !self.players[slot].as_ref().is_some_and(|p| p.is_bot) {
             return;
         }
-        let pos = pick_bot_spawn_point(self, slot, team);
+        let pos = self.pick_spawn_for(team, Some(slot));
 
         let Some(p) = self.players[slot].as_mut() else {
             return;
@@ -2334,6 +2229,46 @@ mod tests {
     #[test]
     fn bots_use_the_human_respawn_delay() {
         assert_eq!(BOT_RESPAWN_DELAY, SV_TIME_TO_SPAWN);
+    }
+
+    #[test]
+    fn bot_respawn_maximizes_distance_from_the_nearest_live_enemy() {
+        let mut game = GameServer::new(crate::config::ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 3,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        game.players = std::array::from_fn(|_| None);
+        game.map_spawns.dm = vec![[0.0, 0.0, 0.25], [10.0, 0.0, 0.25]];
+
+        let mut bot = Player::new(0, u32::MAX, "bot".into());
+        bot.is_bot = true;
+        bot.team_id = PLAYER_TEAM_RED;
+        bot.status = PLAYER_STATUS_DEAD;
+        game.players[0] = Some(bot);
+
+        for (slot, x) in [(1, 0.1), (2, 100.0)] {
+            let mut enemy = Player::new(slot, slot as u32, "enemy".into());
+            enemy.team_id = PLAYER_TEAM_BLUE;
+            enemy.status = PLAYER_STATUS_ALIVE;
+            enemy.cf.position = [x, 0.0, 0.25];
+            game.players[slot] = Some(enemy);
+        }
+
+        game.respawn_bot(0);
+
+        assert_eq!(
+            game.players[0].as_ref().unwrap().cf.position,
+            [10.0, 0.0, 0.25]
+        );
     }
 
     #[test]
