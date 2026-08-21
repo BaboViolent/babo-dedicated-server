@@ -1254,10 +1254,17 @@ impl GameServer {
 
                 let relay = build_coord_frame(pid as i8, p.babonet_id as i32, &p.cf);
                 let fell_to_death = p.cf.position[2] <= 0.0;
+                let echo_authoritative = p.external_bot;
                 for other in self.players.iter().flatten() {
                     if other.babonet_id != babonet_id {
                         self.send_to(other.babonet_id, relay.clone());
                     }
+                }
+                // Browser/native clients predict and reconcile their own movement.
+                // Headless external bots need the collision-corrected position to
+                // measure waypoint progress and replan without dead-reckoning drift.
+                if echo_authoritative {
+                    self.send_to(babonet_id, relay);
                 }
                 if fell_to_death {
                     shoot::apply_world_damage(self, pid, 13, 2.0);
