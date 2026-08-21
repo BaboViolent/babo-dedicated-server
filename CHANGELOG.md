@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.15](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.14...v0.4.15) (2026-08-21)
+
+
+### Bug Fixes
+
+* **spawn:** use native CTF safety scoring for bots ([04e7013](https://github.com/BaboViolent/babo-dedicated-server/commit/04e7013a9ea4037f61895fa194ed71b6f1c8b1ab))
+
 ## [0.4.14](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.13...v0.4.14) (2026-08-21)
 
 
