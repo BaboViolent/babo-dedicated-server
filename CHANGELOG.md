@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.16...v0.5.0) (2026-08-21)
+
+
+### Features
+
+* **server:** expose release version during handshake ([bf4b030](https://github.com/BaboViolent/babo-dedicated-server/commit/bf4b030383692321d1f9ee10542750aeefa83284))
+
 ## [0.4.16](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.15...v0.4.16) (2026-08-21)
 
 
