@@ -268,6 +268,20 @@ fn start_round_end(game: &mut GameServer, state: i8) {
     game.round_state = state;
     game.round_end_remaining = MATCH_END_DELAY;
     freeze_players(game);
+    // Projectile simulation stops outside GAME_PLAYING. Retire the
+    // authoritative entities now so clients do not keep rendering frozen
+    // flames, grenades, or pickups throughout the end-of-match intermission.
+    let projectile_ids: Vec<_> = game
+        .projectiles
+        .drain(..)
+        .map(|projectile| projectile.unique_id)
+        .collect();
+    for unique_id in projectile_ids {
+        game.broadcast(packet::encode_frame(
+            ids::NET_SVCL_DELETE_PROJECTILE,
+            &unique_id.to_le_bytes(),
+        ));
+    }
     game.broadcast(packet::round_state(state, false));
 }
 

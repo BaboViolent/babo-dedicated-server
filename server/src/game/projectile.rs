@@ -477,11 +477,11 @@ pub fn tick_projectiles(game: &mut GameServer, dt: f32) {
                     .and_then(Option::as_ref)
                 {
                     if stick_player.status == PLAYER_STATUS_ALIVE {
-                        projectile.position = [
-                            stick_player.cf.position[0],
-                            stick_player.cf.position[1],
-                            0.0,
-                        ];
+                        // GameProjectile.cpp keeps an attached flame at the
+                        // player's full coordinate frame. Pinning it to z=0
+                        // introduces 0.25 units of radial distance and halves
+                        // native Molotov damage through falloff.
+                        projectile.position = stick_player.cf.position;
                     } else {
                         projectile.stick_to_player = -1;
                         projectile.position = [
@@ -575,6 +575,11 @@ pub fn tick_projectiles(game: &mut GameServer, dt: f32) {
                 });
             }
             if projectile.duration > 0.0 {
+                // Flames take an early branch, so they must publish their
+                // authoritative motion here. Without this frame the browser
+                // leaves both patches stacked at their shared impact origin,
+                // even while Rust moves/scatters or attaches them separately.
+                game.broadcast(projectile_coord_frame(&projectile));
                 survivors.push(projectile);
             } else {
                 deleted.push(projectile.unique_id);

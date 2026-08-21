@@ -27,6 +27,7 @@ const FLAME_DAMAGE: f32 = 0.08;
 const WEAPON_KNIVES: i8 = 10;
 const WEAPON_NUCLEAR: i8 = 11;
 const WEAPON_SHIELD: i8 = 12;
+#[cfg(test)]
 const WEAPON_MOLOTOV: i8 = 9;
 
 /// Maximum plausible distance from the authoritative player centre to a weapon
