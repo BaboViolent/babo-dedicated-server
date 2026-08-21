@@ -41,6 +41,7 @@ pub const CHAT_TEAM_ALL: i8 = -2;
 const IDLE_SPECTATE_SECONDS: f32 = 30.0;
 const IDLE_COUNTDOWN_SECONDS: u8 = 10;
 const IDLE_MOVEMENT_EPSILON_SQ: f32 = 0.05 * 0.05;
+const BOT_SPECTATOR_REJOIN_DELAY: f32 = 1.0;
 const RECENT_CHAT_LIMIT: usize = 20;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -166,6 +167,8 @@ pub struct Player {
     pub bot_identity: Option<BotIdentity>,
     pub bot_fire_cooldown: f32,
     pub bot_respawn_timer: f32,
+    /// Briefly preserves a real spectator state before a bot requests a team again.
+    pub bot_spectator_rejoin_remaining: f32,
     pub bot_wander_angle: f32,
     pub bot_stuck_time: f32,
     pub bot_goal_refresh: f32,
@@ -237,6 +240,7 @@ impl Player {
             bot_identity: None,
             bot_fire_cooldown: 0.0,
             bot_respawn_timer: 0.0,
+            bot_spectator_rejoin_remaining: 0.0,
             bot_wander_angle: 0.0,
             bot_stuck_time: 0.0,
             bot_goal_refresh: 0.0,
@@ -730,6 +734,7 @@ impl GameServer {
             snd::tick_snd(self);
         }
         self.tick_idle_spectators(dt);
+        self.tick_spectator_bots(dt);
         // Transition packets provide immediate feedback; this compact snapshot
         // periodically repairs any client that joined or loaded a map across a
         // transition boundary. WebSocket ordering makes the latest snapshot
@@ -918,6 +923,9 @@ impl GameServer {
             player.time_to_spawn = 0.0;
             player.idle_elapsed = 0.0;
             player.idle_warning = None;
+            if player.is_bot || player.external_bot {
+                player.bot_spectator_rejoin_remaining = BOT_SPECTATOR_REJOIN_DELAY;
+            }
             self.broadcast(packet::encode_frame(
                 ids::NET_CLSV_SVCL_TEAM_REQUEST,
                 &[slot as u8, PLAYER_TEAM_SPECTATOR as u8],
@@ -934,6 +942,53 @@ impl GameServer {
                 player_name = name,
                 "idle player moved to spectators"
             );
+        }
+    }
+
+    /// Bots are players, not permanent spectators. If an idle rule or admin action
+    /// moves one out of play, put it back on the smaller team just as an active
+    /// bot client would request to do.
+    fn tick_spectator_bots(&mut self, dt: f32) {
+        let slots: Vec<usize> = (0..MAX_PLAYER)
+            .filter(|&slot| {
+                let Some(player) = self.players[slot].as_mut() else {
+                    return false;
+                };
+                if !(player.is_bot || player.external_bot)
+                    || !player.handshake_done
+                    || player.team_id != PLAYER_TEAM_SPECTATOR
+                {
+                    return false;
+                }
+                player.bot_spectator_rejoin_remaining =
+                    (player.bot_spectator_rejoin_remaining - dt).max(0.0);
+                player.bot_spectator_rejoin_remaining == 0.0
+            })
+            .collect();
+
+        for slot in slots {
+            let (blue, red) = self.team_counts_without(slot);
+            let team = if blue <= red {
+                PLAYER_TEAM_BLUE
+            } else {
+                PLAYER_TEAM_RED
+            };
+            let Some(player) = self.players[slot].as_mut() else {
+                continue;
+            };
+            player.team_id = team;
+            player.status = PLAYER_STATUS_DEAD;
+            player.life = 0.0;
+            player.time_to_spawn = SV_TIME_TO_SPAWN;
+            player.bot_respawn_timer = bots::BOT_RESPAWN_DELAY;
+            player.bot_spectator_rejoin_remaining = 0.0;
+            player.idle_elapsed = 0.0;
+            player.idle_warning = None;
+            self.broadcast(packet::encode_frame(
+                ids::NET_CLSV_SVCL_TEAM_REQUEST,
+                &[slot as u8, team as u8],
+            ));
+            shoot::broadcast_enum(self, slot);
         }
     }
 
@@ -1197,6 +1252,9 @@ impl GameServer {
                         } else {
                             SV_TIME_TO_SPAWN
                         };
+                        if team == PLAYER_TEAM_SPECTATOR && (p.is_bot || p.external_bot) {
+                            p.bot_spectator_rejoin_remaining = BOT_SPECTATOR_REJOIN_DELAY;
+                        }
                     }
                 } else {
                     return;
@@ -2511,6 +2569,48 @@ mod movement_authority_tests {
         let player = game.players[0].as_ref().unwrap();
         assert_eq!(player.team_id, PLAYER_TEAM_SPECTATOR);
         assert_eq!(player.status, PLAYER_STATUS_DEAD);
+    }
+
+    #[test]
+    fn spectated_external_bot_rejoins_the_smaller_team() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 4,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        let mut bot = Player::new(0, 7, "bot".into());
+        bot.external_bot = true;
+        bot.handshake_done = true;
+        bot.team_id = PLAYER_TEAM_SPECTATOR;
+        bot.status = PLAYER_STATUS_DEAD;
+        game.players[0] = Some(bot);
+        let mut blue = Player::new(1, 8, "blue".into());
+        blue.team_id = PLAYER_TEAM_BLUE;
+        game.players[1] = Some(blue);
+
+        game.players[0]
+            .as_mut()
+            .unwrap()
+            .bot_spectator_rejoin_remaining = super::BOT_SPECTATOR_REJOIN_DELAY;
+        game.tick_spectator_bots(0.5);
+        assert_eq!(
+            game.players[0].as_ref().unwrap().team_id,
+            PLAYER_TEAM_SPECTATOR
+        );
+        game.tick_spectator_bots(0.5);
+
+        let bot = game.players[0].as_ref().unwrap();
+        assert_eq!(bot.team_id, PLAYER_TEAM_RED);
+        assert_eq!(bot.status, PLAYER_STATUS_DEAD);
+        assert_eq!(bot.time_to_spawn, super::SV_TIME_TO_SPAWN);
     }
 
     #[test]

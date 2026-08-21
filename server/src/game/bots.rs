@@ -4,7 +4,8 @@ use crate::game::bot_roster::{bot_decals, bot_name, bot_skin};
 use crate::game::ctf::{CtfState, FLAG_AT_POD, FLAG_DROPPED, GAME_TYPE_CTF};
 use crate::game::{
     clip_player_motion_xy, player_spawn_bytes, BotIdentity, GameServer, Player, MAX_PLAYER,
-    PLAYER_STATUS_ALIVE, PLAYER_STATUS_DEAD, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED, SV_TIME_TO_SPAWN,
+    PLAYER_STATUS_ALIVE, PLAYER_STATUS_DEAD, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
+    PLAYER_TEAM_SPECTATOR, SV_TIME_TO_SPAWN,
 };
 use crate::map::clip_entity_xy;
 use crate::net::{ids, packet};
@@ -973,6 +974,9 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
             continue;
         };
         if !p.is_bot {
+            continue;
+        }
+        if p.team_id == PLAYER_TEAM_SPECTATOR {
             continue;
         }
 
