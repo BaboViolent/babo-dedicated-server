@@ -19,7 +19,6 @@ const BLUE_DROP_TAKE_RADIUS: f32 = 0.5;
 const BLUE_DROP_RETURN_RADIUS: f32 = 0.5;
 const RED_DROP_TAKE_RADIUS: f32 = 0.25;
 const RED_DROP_RETURN_RADIUS: f32 = 0.25;
-const DROPPED_FLAG_AUTO_RETURN: f32 = 20.0;
 const FLAG_ACTION_TAKE: u8 = 1;
 const FLAG_ACTION_RETURN: u8 = 2;
 const FLAG_ACTION_CAPTURE: u8 = 3;
@@ -67,7 +66,7 @@ pub fn map_flag_pod(spawns: &crate::config::MapSpawns) -> [[f32; 3]; 2] {
     spawns.flag_pod
 }
 
-pub fn tick_ctf(game: &mut GameServer, dt: f32) {
+pub fn tick_ctf(game: &mut GameServer, _dt: f32) {
     if game.config.game_type != GAME_TYPE_CTF
         || game.round_state != GAME_PLAYING
         || !game.ctf.supports_ctf()
@@ -76,17 +75,6 @@ pub fn tick_ctf(game: &mut GameServer, dt: f32) {
     }
 
     sync_carrier_positions(game);
-
-    for flag_id in 0..2 {
-        if game.ctf.flag_state[flag_id] == FLAG_DROPPED {
-            game.ctf.dropped_for[flag_id] += dt;
-            if game.ctf.dropped_for[flag_id] >= DROPPED_FLAG_AUTO_RETURN {
-                force_return_flag(game, flag_id, "Dropped flag auto-returned");
-            }
-        } else {
-            game.ctf.dropped_for[flag_id] = 0.0;
-        }
-    }
 
     for slot in 0..MAX_PLAYER {
         let Some(p) = game.players[slot].as_ref() else {
@@ -748,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn unrecoverable_drops_return_immediately_and_ground_drops_auto_return() {
+    fn only_unrecoverable_drops_return_without_player_interaction() {
         let mut game = game();
         game.map_grid = crate::map::MapGrid::fixture(8, &[(3, 3)]);
         add_blue(&mut game);
@@ -763,9 +751,11 @@ mod tests {
         game.players[0].as_mut().unwrap().cf.position = [2.0, 2.0, 0.25];
         drop_carrier_flags(&mut game, 0);
         assert_eq!(game.ctf.flag_state[1], FLAG_DROPPED);
-        tick_ctf(&mut game, DROPPED_FLAG_AUTO_RETURN);
-        assert_eq!(game.ctf.flag_state[1], FLAG_AT_POD);
-        assert_eq!(game.ctf.flag_pos[1], game.ctf.flag_pod[1]);
+        let dropped_at = game.ctf.flag_pos[1];
+        game.players[0].as_mut().unwrap().cf.position = [6.0, 6.0, 0.25];
+        tick_ctf(&mut game, 300.0);
+        assert_eq!(game.ctf.flag_state[1], FLAG_DROPPED);
+        assert_eq!(game.ctf.flag_pos[1], dropped_at);
     }
 
     #[test]
