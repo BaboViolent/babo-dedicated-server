@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.6.0...v0.6.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **network:** reset movement sequence on new match ([5c9b556](https://github.com/BaboViolent/babo-dedicated-server/commit/5c9b5567c3d1fcc6bc0727170e5daf17b8911adc))
+
 ## [0.6.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.5.0...v0.6.0) (2026-08-21)
 
 
