@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.16](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.15...v0.4.16) (2026-08-21)
+
+
+### Bug Fixes
+
+* **chat:** preserve profile formatting in messages ([a5f83e6](https://github.com/BaboViolent/babo-dedicated-server/commit/a5f83e63305f09ccefbf0ff176579506e5c038d8))
+
 ## [0.4.15](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.14...v0.4.15) (2026-08-21)
 
 
