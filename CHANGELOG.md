@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.6.2...v0.7.0) (2026-08-21)
+
+
+### Features
+
+* **bots:** support identified external agents ([c2b4f06](https://github.com/BaboViolent/babo-dedicated-server/commit/c2b4f06dbc9caa5d87cdd826c22008b4dd69a462))
+
 ## [0.6.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.6.1...v0.6.2) (2026-08-21)
 
 
