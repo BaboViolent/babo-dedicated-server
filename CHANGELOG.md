@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.0...v0.9.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **koth:** preserve counters while hill is contested ([548e8b3](https://github.com/BaboViolent/babo-dedicated-server/commit/548e8b36b127a2408792aa0d12fbe912c119cdf9))
+
 ## [0.9.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.8.4...v0.9.0) (2026-08-21)
 
 
