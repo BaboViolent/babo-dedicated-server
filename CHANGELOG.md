@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.8.0...v0.8.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **ctf:** keep recoverable dropped flags in play ([0553702](https://github.com/BaboViolent/babo-dedicated-server/commit/055370226b6d2dbbc6d91a608478290fa61194a3))
+
 ## [0.8.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.7.3...v0.8.0) (2026-08-21)
 
 
