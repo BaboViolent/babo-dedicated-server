@@ -3,8 +3,8 @@
 use crate::game::bot_roster::{bot_decals, bot_name, bot_skin};
 use crate::game::ctf::{CtfState, FLAG_AT_POD, FLAG_DROPPED, GAME_TYPE_CTF};
 use crate::game::{
-    player_spawn_bytes, BotIdentity, GameServer, Player, MAX_PLAYER, PLAYER_STATUS_ALIVE,
-    PLAYER_STATUS_DEAD, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED, SV_TIME_TO_SPAWN,
+    clip_player_motion_xy, player_spawn_bytes, BotIdentity, GameServer, Player, MAX_PLAYER,
+    PLAYER_STATUS_ALIVE, PLAYER_STATUS_DEAD, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED, SV_TIME_TO_SPAWN,
 };
 use crate::map::clip_entity_xy;
 use crate::net::{ids, packet};
@@ -1562,7 +1562,9 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
         let len = (dx * dx + dy * dy).sqrt().max(0.05);
         let vel = [(dx / len) * BOT_SPEED, (dy / len) * BOT_SPEED, 0.0];
         let mut pos = [my_pos[0] + vel[0] * dt, my_pos[1] + vel[1] * dt, my_pos[2]];
+        let mut vel = vel;
         clip_entity_xy(&game.map_grid, &mut pos, PLAYER_RADIUS);
+        clip_player_motion_xy(slot, &live_positions, my_pos, &mut pos, &mut vel);
 
         let moved_dist = (pos[0] - prev_xy[0]).hypot(pos[1] - prev_xy[1]);
         if moved_dist < BOT_STUCK_THRESHOLD || !made_nav_progress {

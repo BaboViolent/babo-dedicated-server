@@ -1205,6 +1205,12 @@ impl GameServer {
                 let Some(pid) = wire_player_slot(payload) else {
                     return;
                 };
+                let live_positions: [Option<[f32; 3]>; MAX_PLAYER] = std::array::from_fn(|slot| {
+                    self.players[slot]
+                        .as_ref()
+                        .filter(|player| player.status == PLAYER_STATUS_ALIVE)
+                        .map(|player| player.cf.position)
+                });
                 let Some(p) = self.players.get_mut(pid).and_then(Option::as_mut) else {
                     return;
                 };
@@ -1242,6 +1248,13 @@ impl GameServer {
                     &mut requested,
                     &mut velocity,
                     0.25,
+                );
+                clip_player_motion_xy(
+                    pid,
+                    &live_positions,
+                    previous,
+                    &mut requested,
+                    &mut velocity,
                 );
 
                 p.cf.frame_id = frame_id;
@@ -1653,6 +1666,67 @@ fn bound_client_movement(
     }
 }
 
+/// Swept circle-vs-circle authority for player bodies. This prevents a large
+/// but otherwise speed-valid movement sample from tunneling through a Babo.
+pub(crate) fn clip_player_motion_xy(
+    slot: usize,
+    live_positions: &[Option<[f32; 3]>],
+    previous: [f32; 3],
+    requested: &mut [f32; 3],
+    velocity: &mut [f32; 3],
+) {
+    const BODY_DIAMETER: f32 = 0.50;
+    const CONTACT_GAP: f32 = 0.005;
+    let movement = [requested[0] - previous[0], requested[1] - previous[1]];
+    let movement_sq = movement[0] * movement[0] + movement[1] * movement[1];
+    let mut earliest = 1.0f32;
+
+    for (other_slot, other) in live_positions.iter().enumerate() {
+        if other_slot == slot {
+            continue;
+        }
+        let Some(other) = other else { continue };
+        let offset = [previous[0] - other[0], previous[1] - other[1]];
+        let start_distance = offset[0].hypot(offset[1]);
+        if start_distance < BODY_DIAMETER {
+            let (nx, ny) = if start_distance > 1e-5 {
+                (offset[0] / start_distance, offset[1] / start_distance)
+            } else if slot < other_slot {
+                (-1.0, 0.0)
+            } else {
+                (1.0, 0.0)
+            };
+            requested[0] = other[0] + nx * (BODY_DIAMETER + CONTACT_GAP);
+            requested[1] = other[1] + ny * (BODY_DIAMETER + CONTACT_GAP);
+            velocity[0] = 0.0;
+            velocity[1] = 0.0;
+            return;
+        }
+        if movement_sq < 1e-8 {
+            continue;
+        }
+        let b = 2.0 * (offset[0] * movement[0] + offset[1] * movement[1]);
+        let c = offset[0] * offset[0] + offset[1] * offset[1] - BODY_DIAMETER * BODY_DIAMETER;
+        let discriminant = b * b - 4.0 * movement_sq * c;
+        if discriminant < 0.0 {
+            continue;
+        }
+        let hit = (-b - discriminant.sqrt()) / (2.0 * movement_sq);
+        if (0.0..=earliest).contains(&hit) {
+            earliest = hit;
+        }
+    }
+
+    if earliest < 1.0 {
+        let movement_length = movement_sq.sqrt();
+        let safe = (earliest - CONTACT_GAP / movement_length.max(1e-5)).max(0.0);
+        requested[0] = previous[0] + movement[0] * safe;
+        requested[1] = previous[1] + movement[1] * safe;
+        velocity[0] = 0.0;
+        velocity[1] = 0.0;
+    }
+}
+
 pub(crate) fn write_name31(buf: &mut [u8], name: &str) {
     let safe = truncate_utf8_bytes(name, 31.min(buf.len().saturating_sub(1)));
     buf[..safe.len()].copy_from_slice(safe.as_bytes());
@@ -1831,11 +1905,11 @@ fn coalescible_packet(frame: &[u8]) -> bool {
 #[cfg(test)]
 mod movement_authority_tests {
     use super::{
-        bot_display_name, bound_client_movement, build_coord_frame, duration_ms_i16,
-        is_advertised_map, map_allowed_for_game_type, normalize_bv2_player_name,
+        bot_display_name, bound_client_movement, build_coord_frame, clip_player_motion_xy,
+        duration_ms_i16, is_advertised_map, map_allowed_for_game_type, normalize_bv2_player_name,
         parse_bot_handshake, player_spawn_bytes, sanitize_player_name, valid_movement_frame,
         valid_player_team, wire_player_slot, write_name31, CoordFrame, GameServer, Player,
-        GAME_TYPE_CTF, GAME_TYPE_SND, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
+        GAME_TYPE_CTF, GAME_TYPE_SND, MAX_PLAYER, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
     };
     use crate::config::ServerConfig;
     use crate::map::MapGrid;
@@ -2320,6 +2394,42 @@ mod movement_authority_tests {
         assert_eq!(requested[2], 0.25);
         assert!((velocity[0] - 3.25).abs() < 0.001);
         assert_eq!(velocity[2], 0.0);
+    }
+
+    #[test]
+    fn player_body_collision_blocks_endpoint_and_swept_tunneling() {
+        let mut positions = [None; MAX_PLAYER];
+        positions[0] = Some([1.0, 1.0, 0.25]);
+        positions[1] = Some([2.0, 1.0, 0.25]);
+        let mut requested = [3.0, 1.0, 0.25];
+        let mut velocity = [3.0, 0.0, 0.0];
+        clip_player_motion_xy(
+            0,
+            &positions,
+            positions[0].unwrap(),
+            &mut requested,
+            &mut velocity,
+        );
+        assert!(requested[0] < 1.51, "player tunneled to x={}", requested[0]);
+        assert_eq!(velocity[..2], [0.0, 0.0]);
+    }
+
+    #[test]
+    fn overlapping_player_bodies_are_separated_deterministically() {
+        let mut positions = [None; MAX_PLAYER];
+        positions[0] = Some([2.0, 2.0, 0.25]);
+        positions[1] = Some([2.0, 2.0, 0.25]);
+        let mut requested = [2.1, 2.0, 0.25];
+        let mut velocity = [1.0, 0.0, 0.0];
+        clip_player_motion_xy(
+            0,
+            &positions,
+            positions[0].unwrap(),
+            &mut requested,
+            &mut velocity,
+        );
+        assert!(requested[0] < 1.5);
+        assert_eq!(velocity[..2], [0.0, 0.0]);
     }
 
     #[test]
