@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.7.3...v0.8.0) (2026-08-21)
+
+
+### Features
+
+* **server:** spectate inactive players ([5323f03](https://github.com/BaboViolent/babo-dedicated-server/commit/5323f038817fdf1eeb990e2e50e348ee8160b164))
+
 ## [0.7.3](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.7.2...v0.7.3) (2026-08-21)
 
 
