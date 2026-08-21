@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.6.1...v0.6.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* **projectiles:** synchronize flame lifecycle and damage ([21d5f33](https://github.com/BaboViolent/babo-dedicated-server/commit/21d5f3328f98ba487c2b412eecccef04a55f3754))
+
 ## [0.6.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.6.0...v0.6.1) (2026-08-21)
 
 
