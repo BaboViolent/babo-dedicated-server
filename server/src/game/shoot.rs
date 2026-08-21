@@ -9,6 +9,8 @@ use crate::net::{ids, packet};
 
 const PLAYER_RADIUS: f32 = 0.25;
 const GAME_TYPE_DM: i8 = 0;
+const GAME_TYPE_TDM: i8 = 1;
+const GAME_TYPE_CTF: i8 = 2;
 
 #[cfg(test)]
 const WEAPON_SMG: i8 = 0;
@@ -737,7 +739,9 @@ fn apply_damage_from(
                 grenades,
             );
         }
-        if let Some(attacker) = attacker.filter(|&_| weapon_id == WEAPON_MOLOTOV) {
+        if let Some(attacker) =
+            attacker.filter(|&slot| weapon_id == WEAPON_MOLOTOV && slot != victim)
+        {
             if let Some(attacker_player) = game.players[attacker].as_mut() {
                 attacker_player.molotov_kill_streak =
                     (attacker_player.molotov_kill_streak + 1).min(FLAME_KILL_STREAK_MAX);
@@ -757,18 +761,40 @@ fn apply_damage_from(
             // Player.cpp:1469 — CTF team score tracks captures, not frags.
             let team_frags = frags_count_for_team_score(game.config.game_type);
             if let Some(a) = game.players[attacker].as_mut() {
-                a.kills += 1;
-                if team_frags {
+                if attacker == victim {
+                    // Player.cpp::hit — suicides always add a death. DM/S&D
+                    // also lose a kill; TDM loses team score; CTF leaves its
+                    // capture score and kill count unchanged.
+                    if game.config.game_type != GAME_TYPE_CTF {
+                        a.score -= 1;
+                    }
+                    if matches!(
+                        game.config.game_type,
+                        GAME_TYPE_DM | crate::game::GAME_TYPE_SND
+                    ) {
+                        a.kills -= 1;
+                    }
+                } else {
+                    a.kills += 1;
+                }
+                if team_frags && attacker != victim {
                     // In CTF this wire field is the player's successful capture
                     // count. Kills have their own field and must never inflate it.
                     a.score += 1;
                 }
                 let team = a.team_id;
-                if team_frags {
+                if team_frags && attacker != victim {
                     if team == PLAYER_TEAM_BLUE {
                         game.blue_score += 1;
                     } else if team == PLAYER_TEAM_RED {
                         game.red_score += 1;
+                    }
+                }
+                if game.config.game_type == GAME_TYPE_TDM && attacker == victim {
+                    if team == PLAYER_TEAM_BLUE {
+                        game.blue_score -= 1;
+                    } else if team == PLAYER_TEAM_RED {
+                        game.red_score -= 1;
                     }
                 }
             }
@@ -1187,6 +1213,42 @@ mod tests {
 
         apply_damage(&mut game, 0, 0, WEAPON_SMG, 0.2);
         assert!((game.players[0].as_ref().unwrap().dmg - 0.4).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn suicide_matches_native_death_kill_and_score_accounting() {
+        for (game_type, expected_kills, expected_score, expected_team_score) in [
+            (GAME_TYPE_DM, -1, -1, 0),
+            (GAME_TYPE_TDM, 0, -1, -1),
+            (GAME_TYPE_CTF, 0, 0, 0),
+            (crate::game::GAME_TYPE_SND, -1, -1, 0),
+        ] {
+            let mut game = GameServer::new(ServerConfig {
+                bind_addr: "127.0.0.1:0".into(),
+                content_root: PathBuf::from("../Content/main"),
+                map_name: "CTF-Alert".into(),
+                game_name: "test".into(),
+                password: String::new(),
+                game_type,
+                max_players: 1,
+                bot_count: 0,
+                score_limit: 50,
+                win_limit: 7,
+                game_time_limit: 15.0 * 60.0,
+            });
+            let mut player = armed(WEAPON_BAZOOKA);
+            player.slot = 0;
+            player.team_id = PLAYER_TEAM_BLUE;
+            player.status = PLAYER_STATUS_ALIVE;
+            game.players[0] = Some(player);
+            apply_damage(&mut game, 0, 0, WEAPON_BAZOOKA, 2.0);
+            let player = game.players[0].as_ref().unwrap();
+            assert_eq!(
+                (player.deaths, player.kills, player.score),
+                (1, expected_kills, expected_score)
+            );
+            assert_eq!(game.blue_score, expected_team_score);
+        }
     }
 
     #[test]
