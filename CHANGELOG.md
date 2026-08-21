@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.7.0...v0.7.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **bots:** move identity into binary handshake ([050ae03](https://github.com/BaboViolent/babo-dedicated-server/commit/050ae0300b2e2962e34e4d74add2b3af856431f2))
+
 ## [0.7.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.6.2...v0.7.0) (2026-08-21)
 
 
