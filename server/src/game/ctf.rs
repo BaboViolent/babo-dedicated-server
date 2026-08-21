@@ -304,6 +304,11 @@ fn reset_player_spawn(game: &mut GameServer, slot: usize) {
         return;
     };
     player.status = PLAYER_STATUS_ALIVE;
+    // A new-map spawn starts a fresh movement stream. The client may have
+    // advanced its local counter while end-of-round movement was ignored;
+    // retaining the old accepted frame can otherwise reject every frame in
+    // the new game as an oversized jump.
+    player.cf.frame_id = 0;
     player.cf.position = [pos[0], pos[1], pos[2]];
     player.cf.vel = [0.0, 0.0, 0.0];
     player.time_to_spawn = 0.0;
@@ -754,6 +759,7 @@ mod tests {
         let mut game = game();
         let old_map = game.config.map_name.clone();
         add_blue(&mut game);
+        game.players[0].as_mut().unwrap().cf.frame_id = 42;
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
         game.register_session(99, tx);
         capture(&mut game, 0, PLAYER_TEAM_BLUE);
@@ -773,6 +779,7 @@ mod tests {
         assert_eq!(player.status, PLAYER_STATUS_ALIVE);
         assert_eq!(player.score, 0);
         assert_eq!(player.time_to_spawn, 0.0);
+        assert_eq!(player.cf.frame_id, 0);
 
         let frames: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
             .map(|bytes| packet::decode_frame(&bytes).unwrap().unwrap())
