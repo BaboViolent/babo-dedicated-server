@@ -1284,7 +1284,10 @@ impl GameServer {
                     return;
                 }
                 let player_id = sender.slot;
-                let player_name = sanitize_chat_text(&sender.name);
+                // The authenticated profile name was already bounded and sanitized by
+                // sanitize_player_name. Preserve its native colour control bytes and
+                // legacy Alt-code glyphs when prefixing chat, just as Client.cpp does.
+                let player_name = sender.name.clone();
                 let visible = format!("{player_name}: {message}");
                 let mut outgoing = vec![0u8; 131];
                 outgoing[0] = team as u8;
@@ -1952,7 +1955,7 @@ mod movement_authority_tests {
         {
             let mut player = Player::new(slot, slot as u32 + 1, "test".into());
             player.name = if slot == 0 {
-                "\u{3}Alice".into()
+                "\u{3}Ali\u{9b}ce".into()
             } else {
                 format!("P{slot}")
             };
@@ -1973,8 +1976,9 @@ mod movement_authority_tests {
         assert_eq!(decoded.payload[0] as i8, PLAYER_TEAM_BLUE);
         assert_eq!(
             crate::net::packet::read_str(&decoded.payload, 1, 130),
-            "Alice: server: spoof"
+            "\u{3}Ali\u{9b}ce: server: spoof"
         );
+        assert_eq!(game.recent_chat[0].player_name, "\u{3}Ali\u{9b}ce");
         assert!(receivers[1].try_recv().is_err());
         assert!(receivers[2].try_recv().is_err());
 
