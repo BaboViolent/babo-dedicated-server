@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.14](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.13...v0.4.14) (2026-08-21)
+
+
+### Bug Fixes
+
+* **molotov:** restore independent flame damage ([50f48cc](https://github.com/BaboViolent/babo-dedicated-server/commit/50f48cc4ac8e921763cc6f0f944dfa5e138bac00))
+* **scoring:** apply native suicide penalties ([8e9d8f1](https://github.com/BaboViolent/babo-dedicated-server/commit/8e9d8f1a3c86d24cc97635e52c7411478b8728c9))
+
 ## [0.4.13](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.12...v0.4.13) (2026-08-21)
 
 
