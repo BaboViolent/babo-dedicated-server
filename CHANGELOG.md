@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.5.0...v0.6.0) (2026-08-21)
+
+
+### Features
+
+* **debug:** log authoritative world entities ([0554c5a](https://github.com/BaboViolent/babo-dedicated-server/commit/0554c5a426573b66c4eb41cd4c756d90e0154a98))
+
+
+### Bug Fixes
+
+* **projectiles:** bounce dropped items off ground ([bec7b88](https://github.com/BaboViolent/babo-dedicated-server/commit/bec7b8808ffc74adaa0a21b41c7d1fa0aed09e15))
+
 ## [0.5.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.16...v0.5.0) (2026-08-21)
 
 
