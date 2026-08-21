@@ -76,6 +76,7 @@ pub fn handle_vote_request(game: &mut GameServer, babonet_id: BaboNetId, payload
     };
     if player.babonet_id != babonet_id
         || player.is_bot
+        || player.external_bot
         || !matches!(player.team_id, PLAYER_TEAM_BLUE | PLAYER_TEAM_RED)
     {
         return;
@@ -92,7 +93,9 @@ pub fn handle_vote_request(game: &mut GameServer, babonet_id: BaboNetId, payload
         .iter()
         .flatten()
         .filter(|player| {
-            !player.is_bot && matches!(player.team_id, PLAYER_TEAM_BLUE | PLAYER_TEAM_RED)
+            !player.is_bot
+                && !player.external_bot
+                && matches!(player.team_id, PLAYER_TEAM_BLUE | PLAYER_TEAM_RED)
         })
         .map(|player| player.babonet_id)
         .collect();

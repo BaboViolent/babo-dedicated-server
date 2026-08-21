@@ -516,7 +516,7 @@ fn log_flag_transition(
         .map(|player| player.name.as_str())
         .unwrap_or("unknown");
     let team = actor.map(|player| player.team_id).unwrap_or(-1);
-    let bot = actor.is_some_and(|player| player.is_bot);
+    let bot = actor.is_some_and(|player| player.is_bot || player.external_bot);
     let actor_position = actor.map(|player| player.cf.position).unwrap_or([0.0; 3]);
     let position = game.ctf.flag_pos[flag_id];
     tracing::info!(

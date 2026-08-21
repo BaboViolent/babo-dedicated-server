@@ -3,8 +3,8 @@
 use crate::game::bot_roster::{bot_decals, bot_name, bot_skin};
 use crate::game::ctf::{CtfState, FLAG_AT_POD, FLAG_DROPPED, GAME_TYPE_CTF};
 use crate::game::{
-    player_spawn_bytes, GameServer, Player, MAX_PLAYER, PLAYER_STATUS_ALIVE, PLAYER_STATUS_DEAD,
-    PLAYER_TEAM_BLUE, PLAYER_TEAM_RED, SV_TIME_TO_SPAWN,
+    player_spawn_bytes, BotIdentity, GameServer, Player, MAX_PLAYER, PLAYER_STATUS_ALIVE,
+    PLAYER_STATUS_DEAD, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED, SV_TIME_TO_SPAWN,
 };
 use crate::map::clip_entity_xy;
 use crate::net::{ids, packet};
@@ -1327,14 +1327,7 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
         }
         let waypoint = p.bot_brain.nav_waypoint;
         let waypoint_distance = (waypoint[0] - my_pos[0]).hypot(waypoint[1] - my_pos[1]);
-        let goal_arrival_radius = match p.bot_brain.role {
-            // CTF capture uses a 0.25-unit center radius. Stopping at the
-            // generic 0.40 navigation tolerance left carriers visibly
-            // circling outside the scoring trigger. Defenders also use a
-            // tight tolerance so their patrol never becomes a static post.
-            BotRole::Carrier | BotRole::Defender => 0.12,
-            _ => 0.40,
-        };
+        let goal_arrival_radius = bot_goal_arrival_radius(p.bot_brain.role, p.bot_brain.state);
         let at_navigation_goal = (p.bot_brain.nav_goal[0] - my_pos[0])
             .hypot(p.bot_brain.nav_goal[1] - my_pos[1])
             < goal_arrival_radius;
@@ -1530,6 +1523,17 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
         let mut dy = steer[1] - my_pos[1];
         let separation = separation_force(slot, my_pos, &live_positions);
         let mut separation_weight = BOT_SEPARATION_WEIGHT;
+        let closing_on_flag =
+            matches!(
+                p.bot_brain.state,
+                BotTacticalState::AttackObjective | BotTacticalState::Recover
+            ) && (my_pos[0] - navigation_goal[0]).hypot(my_pos[1] - navigation_goal[1]) <= 1.0;
+        if closing_on_flag {
+            // Player bodies do not block movement. Once an objective runner
+            // reaches the flag tile, teammate separation only makes them
+            // hesitate around the 0.25-unit take/return trigger.
+            separation_weight = 0.0;
+        }
         if carrying_enemy_flag {
             let own_flag = if my_team == PLAYER_TEAM_BLUE { 0 } else { 1 };
             let near_scoring_pod = ctf_snapshot.as_ref().is_some_and(|ctf| {
@@ -1602,6 +1606,25 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
     }
     for slot in melee_slots {
         crate::game::shoot::bot_melee(game, slot);
+    }
+}
+
+fn bot_goal_arrival_radius(role: BotRole, state: BotTacticalState) -> f32 {
+    // All flag interactions use a 0.25-unit center radius. Stopping at the
+    // generic 0.40 navigation tolerance made attackers and recoverers wait
+    // just outside take/return range. Defenders also use a tight tolerance so
+    // their patrol never becomes a static post.
+    if role == BotRole::Defender
+        || matches!(
+            state,
+            BotTacticalState::AttackObjective
+                | BotTacticalState::Capture
+                | BotTacticalState::Recover
+        )
+    {
+        0.12
+    } else {
+        0.40
     }
 }
 
@@ -1846,6 +1869,11 @@ impl GameServer {
         let babonet_id = u32::MAX - slot as u32;
         let mut p = Player::new(slot, babonet_id, "127.0.0.1".into());
         p.is_bot = true;
+        p.bot_identity = Some(BotIdentity {
+            name: "bv2-server AI".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            author: "BaboViolent community".into(),
+        });
         p.name = bot_name(roster_index);
         p.handshake_done = true;
         p.team_id = team_id;
@@ -2786,6 +2814,30 @@ mod tests {
         assert_eq!(
             intercept_goal([4.0, 5.0, 0.25], [2.0, -1.0, 0.0], 1.5),
             [7.0, 3.5]
+        );
+    }
+
+    #[test]
+    fn flag_runners_enter_the_server_interaction_radius() {
+        assert_eq!(
+            bot_goal_arrival_radius(BotRole::Attacker, BotTacticalState::AttackObjective),
+            0.12
+        );
+        assert_eq!(
+            bot_goal_arrival_radius(BotRole::Recoverer, BotTacticalState::Recover),
+            0.12
+        );
+        assert_eq!(
+            bot_goal_arrival_radius(BotRole::Carrier, BotTacticalState::Capture),
+            0.12
+        );
+    }
+
+    #[test]
+    fn non_objective_bots_keep_the_general_arrival_tolerance() {
+        assert_eq!(
+            bot_goal_arrival_radius(BotRole::Attacker, BotTacticalState::Attack),
+            0.40
         );
     }
 

@@ -40,6 +40,14 @@ pub const PLAYER_TEAM_RED: i8 = 1;
 pub const CHAT_TEAM_ALL: i8 = -2;
 const RECENT_CHAT_LIMIT: usize = 20;
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BotIdentity {
+    pub name: String,
+    pub version: String,
+    pub author: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentChat {
@@ -150,6 +158,9 @@ pub struct Player {
     pub handshake_done: bool,
     pub spawned_once: bool,
     pub is_bot: bool,
+    /// Remotely controlled bot connected through `/bot/ws`.
+    pub external_bot: bool,
+    pub bot_identity: Option<BotIdentity>,
     pub bot_fire_cooldown: f32,
     pub bot_respawn_timer: f32,
     pub bot_wander_angle: f32,
@@ -215,6 +226,8 @@ impl Player {
             handshake_done: false,
             spawned_once: false,
             is_bot: false,
+            external_bot: false,
+            bot_identity: None,
             bot_fire_cooldown: 0.0,
             bot_respawn_timer: 0.0,
             bot_wander_angle: 0.0,
@@ -466,6 +479,24 @@ impl GameServer {
     }
 
     pub fn connect_client(&mut self, babonet_id: BaboNetId, ip: String) -> Option<usize> {
+        self.connect_player(babonet_id, ip, None)
+    }
+
+    pub fn connect_external_bot(
+        &mut self,
+        babonet_id: BaboNetId,
+        ip: String,
+        identity: BotIdentity,
+    ) -> Option<usize> {
+        self.connect_player(babonet_id, ip, Some(identity))
+    }
+
+    fn connect_player(
+        &mut self,
+        babonet_id: BaboNetId,
+        ip: String,
+        bot_identity: Option<BotIdentity>,
+    ) -> Option<usize> {
         let max = self.config.max_players.min(MAX_PLAYER);
         if !(0..max).any(|slot| self.players[slot].is_none()) {
             if let Some(slot) = (0..max).rev().find(|&slot| {
@@ -478,12 +509,22 @@ impl GameServer {
         }
         for slot in 0..max {
             if self.players[slot].is_none() {
-                self.players[slot] = Some(Player::new(slot, babonet_id, ip));
+                let mut player = Player::new(slot, babonet_id, ip);
+                player.external_bot = bot_identity.is_some();
+                player.bot_identity = bot_identity.clone();
+                if player.external_bot {
+                    player.name = bot_display_name(&player.name);
+                }
+                self.players[slot] = Some(player);
                 let pid = slot as i8;
                 self.broadcast(packet::newplayer(pid, babonet_id as i32));
                 self.send_to(babonet_id, packet::gameversion());
                 reconcile_bot_roster(self);
-                tracing::info!("player slot {slot} babonet {babonet_id}");
+                if let Some(identity) = &bot_identity {
+                    tracing::info!(slot, babonet_id, bot_name = %identity.name, bot_version = %identity.version, bot_author = %identity.author, "external bot connected");
+                } else {
+                    tracing::info!("player slot {slot} babonet {babonet_id}");
+                }
                 return Some(slot);
             }
         }
@@ -974,13 +1015,16 @@ impl GameServer {
                         return;
                     }
                     let name = sanitize_player_name(&name);
-                    p.name = if name.is_empty() {
-                        p.name.clone()
-                    } else {
-                        name
-                    };
+                    if !name.is_empty() {
+                        p.name = if p.external_bot {
+                            bot_display_name(&name)
+                        } else {
+                            name
+                        };
+                    }
                     let mut out = payload.to_vec();
                     write_ip16(&mut out[1..17], &p.ip);
+                    write_name31(&mut out[17..49], &p.name);
                     let enum_body = p.enum_state_bytes();
                     self.broadcast(packet::encode_frame(ids::NET_CLSV_SVCL_PLAYER_INFO, &out));
                     self.broadcast(packet::encode_frame(
@@ -1344,6 +1388,11 @@ impl GameServer {
                     );
                     return;
                 }
+                let name = if player.external_bot {
+                    bot_display_name(&name)
+                } else {
+                    name
+                };
                 player.name = name.clone();
                 let mut outgoing = vec![0u8; 33];
                 outgoing[0] = pid as u8;
@@ -1611,6 +1660,14 @@ fn sanitize_player_name(text: &str) -> String {
     truncate_utf8_bytes(&clean, 31).to_string()
 }
 
+fn bot_display_name(text: &str) -> String {
+    const SUFFIX: &str = " [bot]";
+    let clean = sanitize_player_name(text);
+    let base = clean.strip_suffix(SUFFIX).unwrap_or(&clean).trim_end();
+    let base = truncate_utf8_bytes(base, 31 - SUFFIX.len());
+    format!("{base}{SUFFIX}")
+}
+
 fn truncate_utf8_bytes(text: &str, maximum: usize) -> &str {
     let mut end = text.len().min(maximum);
     while !text.is_char_boundary(end) {
@@ -1654,10 +1711,10 @@ fn coalescible_packet(frame: &[u8]) -> bool {
 #[cfg(test)]
 mod movement_authority_tests {
     use super::{
-        bound_client_movement, build_coord_frame, duration_ms_i16, is_advertised_map,
-        map_allowed_for_game_type, player_spawn_bytes, sanitize_player_name, valid_movement_frame,
-        valid_player_team, wire_player_slot, write_name31, CoordFrame, GameServer, Player,
-        GAME_TYPE_CTF, GAME_TYPE_SND, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
+        bot_display_name, bound_client_movement, build_coord_frame, duration_ms_i16,
+        is_advertised_map, map_allowed_for_game_type, player_spawn_bytes, sanitize_player_name,
+        valid_movement_frame, valid_player_team, wire_player_slot, write_name31, CoordFrame,
+        GameServer, Player, GAME_TYPE_CTF, GAME_TYPE_SND, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
     };
     use crate::config::ServerConfig;
     use crate::map::MapGrid;
@@ -1691,6 +1748,26 @@ mod movement_authority_tests {
         let name = "\u{3}Red \u{9b} King";
         assert_eq!(sanitize_player_name(name), name);
         assert_eq!(sanitize_player_name("A\nB\u{b}C"), "ABC");
+    }
+
+    #[test]
+    fn external_bot_names_get_one_server_owned_suffix_within_wire_limit() {
+        assert_eq!(bot_display_name("Ada"), "Ada [bot]");
+        assert_eq!(bot_display_name("Ada [bot]"), "Ada [bot]");
+        let name = bot_display_name("éééééééééééééééééééé");
+        assert!(name.ends_with(" [bot]"));
+        assert!(name.len() <= 31);
+        assert!(name.is_char_boundary(name.len()));
+    }
+
+    #[test]
+    fn external_bot_identity_is_distinct_from_server_control() {
+        let mut player = Player::new(0, 42, "test".into());
+        player.external_bot = true;
+        player.name = bot_display_name("Player0");
+        assert!(player.external_bot);
+        assert!(!player.is_bot);
+        assert_eq!(player.name, "Player0 [bot]");
     }
 
     #[test]

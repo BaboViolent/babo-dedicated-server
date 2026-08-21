@@ -7,19 +7,20 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
-use axum::http::{header, HeaderValue};
-use axum::response::IntoResponse;
+use axum::extract::{Query, State};
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::ServerConfig;
 use crate::game::{
-    bot_scenario_summary, configure_bot_scenario, spawn_initial_bots, GameServer, TICK_MS,
+    bot_scenario_summary, configure_bot_scenario, spawn_initial_bots, BotIdentity, GameServer,
+    TICK_MS,
 };
 use crate::net::packet::{self, PacketError};
 
@@ -100,6 +101,7 @@ async fn main() {
         .route("/info", get(info))
         .route("/favicon.ico", get(favicon))
         .route("/ws", get(ws_handler))
+        .route("/bot/ws", get(bot_ws_handler))
         .with_state(state);
 
     tracing::info!("listening on http://{bind}  websocket=ws://{bind}/ws");
@@ -141,6 +143,8 @@ struct InfoPlayer {
     team: i8,
     status: i8,
     bot: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bot_identity: Option<BotIdentity>,
     ping: i16,
     kills: i16,
     deaths: i16,
@@ -203,7 +207,8 @@ fn server_info(game: &GameServer) -> ServerInfo {
             name: player.name.clone(),
             team: player.team_id,
             status: player.status,
-            bot: player.is_bot,
+            bot: player.is_bot || player.external_bot,
+            bot_identity: player.bot_identity.clone(),
             ping: player.ping_ms,
             kills: player.kills,
             deaths: player.deaths,
@@ -261,7 +266,47 @@ async fn favicon() -> impl IntoResponse {
 }
 
 async fn ws_handler(State(game): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(game, socket))
+    ws.on_upgrade(move |socket| handle_socket(game, socket, None))
+}
+
+#[derive(Deserialize)]
+struct BotIdentityQuery {
+    name: String,
+    version: String,
+    author: String,
+}
+
+async fn bot_ws_handler(
+    Query(query): Query<BotIdentityQuery>,
+    State(game): State<AppState>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let identity = match validated_bot_identity(query) {
+        Ok(identity) => identity,
+        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
+    };
+    ws.on_upgrade(move |socket| handle_socket(game, socket, Some(identity)))
+        .into_response()
+}
+
+fn validated_bot_identity(query: BotIdentityQuery) -> Result<BotIdentity, String> {
+    fn field(label: &str, value: String, maximum: usize) -> Result<String, String> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(format!("bot {label} is required"));
+        }
+        if value.len() > maximum || value.chars().any(char::is_control) {
+            return Err(format!(
+                "bot {label} must be 1-{maximum} printable UTF-8 bytes"
+            ));
+        }
+        Ok(value.to_string())
+    }
+    Ok(BotIdentity {
+        name: field("name", query.name, 64)?,
+        version: field("version", query.version, 32)?,
+        author: field("author", query.author, 64)?,
+    })
 }
 
 struct MovementBudget {
@@ -336,7 +381,7 @@ impl MovementBudget {
     }
 }
 
-async fn handle_socket(game: AppState, socket: WebSocket) {
+async fn handle_socket(game: AppState, socket: WebSocket, bot_identity: Option<BotIdentity>) {
     const OUTBOUND_QUEUE_CAPACITY: usize = 256;
     const MAX_BUFFERED_INBOUND: usize = 256 * 1024;
     const MAX_FRAMES_PER_MESSAGE: usize = 128;
@@ -353,7 +398,12 @@ async fn handle_socket(game: AppState, socket: WebSocket) {
     {
         let mut g = game.write().await;
         g.register_session(babonet_id, tx);
-        if g.connect_client(babonet_id, ip).is_none() {
+        let connected = if let Some(identity) = bot_identity {
+            g.connect_external_bot(babonet_id, ip, identity)
+        } else {
+            g.connect_client(babonet_id, ip)
+        };
+        if connected.is_none() {
             tracing::warn!("server full — disconnecting {babonet_id}");
             g.disconnect_babonet(babonet_id);
             return;
@@ -431,7 +481,35 @@ async fn handle_socket(game: AppState, socket: WebSocket) {
 
 #[cfg(test)]
 mod websocket_flow_tests {
-    use super::{coalesce_movement_frames, take_complete_frame, MovementBudget};
+    use super::{
+        coalesce_movement_frames, take_complete_frame, validated_bot_identity, BotIdentityQuery,
+        MovementBudget,
+    };
+
+    #[test]
+    fn bot_upgrade_requires_bounded_reported_identity() {
+        let identity = validated_bot_identity(BotIdentityQuery {
+            name: " ExampleBot ".into(),
+            version: "1.2.3".into(),
+            author: "Arena Lab".into(),
+        })
+        .unwrap();
+        assert_eq!(identity.name, "ExampleBot");
+        assert_eq!(identity.version, "1.2.3");
+        assert_eq!(identity.author, "Arena Lab");
+        assert!(validated_bot_identity(BotIdentityQuery {
+            name: "".into(),
+            version: "1".into(),
+            author: "A".into(),
+        })
+        .is_err());
+        assert!(validated_bot_identity(BotIdentityQuery {
+            name: "Bot".into(),
+            version: "1\n2".into(),
+            author: "A".into(),
+        })
+        .is_err());
+    }
 
     #[test]
     fn movement_budget_allows_small_jitter_burst_then_sheds_flood() {
