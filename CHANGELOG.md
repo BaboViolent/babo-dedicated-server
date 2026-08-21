@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.7.1...v0.7.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* **bots:** echo authoritative external movement ([6cf215b](https://github.com/BaboViolent/babo-dedicated-server/commit/6cf215b1d72062a47a5c4f5594f37358855ce192))
+
 ## [0.7.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.7.0...v0.7.1) (2026-08-21)
 
 
