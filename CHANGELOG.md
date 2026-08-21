@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.8.4...v0.9.0) (2026-08-21)
+
+
+### Features
+
+* **koth:** add king of the hill game mode ([303062a](https://github.com/BaboViolent/babo-dedicated-server/commit/303062a682631227006afe6ab52f4090002fa92f))
+
 ## [0.8.4](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.8.3...v0.8.4) (2026-08-21)
 
 
