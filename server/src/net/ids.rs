@@ -28,6 +28,7 @@ pub const NET_SVCL_AUTOBALANCE: u16 = 128;
 pub const NET_SVCL_UPDATE_VOTE: u16 = 130;
 pub const NET_SVCL_VOTE_RESULT: u16 = 131;
 pub const NET_SVCL_GAMEVERSION: u16 = 116;
+pub const NET_SVCL_KOTH_STATE: u16 = 136;
 
 pub const NET_CLSV_SVCL_PLAYER_INFO: u16 = 201;
 pub const NET_CLSV_SVCL_CHAT: u16 = 202;

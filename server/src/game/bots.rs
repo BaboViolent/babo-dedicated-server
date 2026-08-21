@@ -936,6 +936,11 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
         .map(|player| player.as_ref().map(|player| player.elapsed_since_last_shot))
         .collect();
     let game_type = game.config.game_type;
+    let koth_goal =
+        (game_type == crate::game::GAME_TYPE_KOTH && game.koth.supported()).then_some([
+            (game.koth.bounds[0] + game.koth.bounds[1]) * 0.5,
+            (game.koth.bounds[2] + game.koth.bounds[3]) * 0.5,
+        ]);
     let ctf_active = game_type == GAME_TYPE_CTF && game.ctf.supports_ctf();
     let ctf_snapshot = if ctf_active {
         Some(game.ctf.clone())
@@ -1279,6 +1284,8 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
                         defend_pressure,
                     ),
                 }
+            } else if let Some(goal) = koth_goal {
+                goal
             } else if let Some((ts, _)) = combat_target {
                 let tp = live_positions[ts].unwrap();
                 [tp[0], tp[1]]

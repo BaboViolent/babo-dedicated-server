@@ -741,7 +741,10 @@ fn apply_damage_from(
                     // Player.cpp::hit — suicides always add a death. DM/S&D
                     // also lose a kill; TDM loses team score; CTF leaves its
                     // capture score and kill count unchanged.
-                    if game.config.game_type != GAME_TYPE_CTF {
+                    if !matches!(
+                        game.config.game_type,
+                        GAME_TYPE_CTF | crate::game::GAME_TYPE_KOTH
+                    ) {
                         a.score -= 1;
                     }
                     if matches!(
@@ -789,7 +792,10 @@ fn apply_damage_from(
 }
 
 fn frags_count_for_team_score(game_type: i8) -> bool {
-    game_type != crate::game::ctf::GAME_TYPE_CTF
+    !matches!(
+        game_type,
+        crate::game::ctf::GAME_TYPE_CTF | crate::game::GAME_TYPE_KOTH
+    )
 }
 
 fn shotgun_pellet_endpoint(from: [f32; 3], to: [f32; 3], pellet: u8) -> [f32; 3] {

@@ -14,6 +14,7 @@ use crate::net::packet;
 mod bot_roster;
 mod bots;
 mod ctf;
+mod koth;
 mod projectile;
 mod shoot;
 mod snd;
@@ -24,6 +25,7 @@ pub use bots::{
     tick_bots, BotBrain,
 };
 pub use ctf::{send_flag_enum_to, CtfState, GAME_TYPE_CTF};
+pub use koth::{KothState, GAME_TYPE_KOTH};
 pub use voting::VoteState;
 
 pub const MAX_PLAYER: usize = 32;
@@ -71,10 +73,10 @@ fn is_advertised_map(map_list: &[String], name: &str) -> bool {
 }
 
 fn map_allowed_for_game_type(game_type: i8, name: &str) -> bool {
-    if game_type == GAME_TYPE_SND {
-        name.starts_with("CHP-")
-    } else {
-        !name.starts_with("CHP-")
+    match game_type {
+        GAME_TYPE_SND => name.starts_with("CHP-"),
+        GAME_TYPE_KOTH => name.starts_with("KOTH-"),
+        _ => !name.starts_with("CHP-") && !name.starts_with("KOTH-"),
     }
 }
 
@@ -86,6 +88,7 @@ fn map_compatible_for_game_type(game_type: i8, spawns: &MapSpawns) -> bool {
                 && !spawns.red.is_empty()
         }
         1 => !spawns.blue.is_empty() && !spawns.red.is_empty(),
+        GAME_TYPE_KOTH => !spawns.dm.is_empty() && spawns.blue.len() >= 2,
         _ => !spawns.dm.is_empty(),
     }
 }
@@ -333,6 +336,7 @@ pub struct GameServer {
     pub next_projectile_id: i32,
     diagnostics_enabled: bool,
     pub ctf: CtfState,
+    pub koth: KothState,
     pub voting_enabled: bool,
     pub vote: VoteState,
     pub recent_chat: VecDeque<RecentChat>,
@@ -389,6 +393,7 @@ impl GameServer {
         );
         let flag_pod = ctf::map_flag_pod(&map_spawns);
         let ctf_state = CtfState::new(flag_pod);
+        let koth_state = KothState::new(&map_spawns.blue);
         if config.game_type == GAME_TYPE_CTF {
             if ctf_state.supports_ctf() {
                 tracing::info!(
@@ -435,6 +440,7 @@ impl GameServer {
                 )
             }),
             ctf: ctf_state,
+            koth: koth_state,
             voting_enabled: std::env::var("BV2_ENABLE_VOTE").is_ok_and(|value| {
                 matches!(
                     value.to_ascii_lowercase().as_str(),
@@ -574,7 +580,8 @@ impl GameServer {
     }
 
     fn team_join_allowed(&self, slot: usize, requested: i8) -> bool {
-        if requested == PLAYER_TEAM_SPECTATOR || !matches!(self.config.game_type, 1 | GAME_TYPE_CTF)
+        if requested == PLAYER_TEAM_SPECTATOR
+            || !matches!(self.config.game_type, 1 | GAME_TYPE_CTF | GAME_TYPE_KOTH)
         {
             return true;
         }
@@ -588,7 +595,7 @@ impl GameServer {
     }
 
     fn tick_auto_balance(&mut self, dt: f32) {
-        if !matches!(self.config.game_type, 1 | GAME_TYPE_CTF) {
+        if !matches!(self.config.game_type, 1 | GAME_TYPE_CTF | GAME_TYPE_KOTH) {
             self.auto_balance_remaining = 0.0;
             return;
         }
@@ -731,6 +738,7 @@ impl GameServer {
             shoot::tick_special_weapons(self, dt);
             shoot::tick_photon_beams(self);
             ctf::tick_ctf(self, dt);
+            koth::tick_koth(self, dt);
             snd::tick_snd(self);
         }
         self.tick_idle_spectators(dt);
@@ -1020,6 +1028,7 @@ impl GameServer {
             self.map_spawns = spawns;
             self.map_grid = grid;
             self.ctf = CtfState::new(ctf::map_flag_pod(&self.map_spawns));
+            self.koth = KothState::new(&self.map_spawns.blue);
             break;
         }
     }
@@ -1145,6 +1154,9 @@ impl GameServer {
                 );
                 self.send_to(babonet_id, packet::round_state(self.round_state, false));
                 send_flag_enum_to(self, babonet_id);
+                if self.config.game_type == GAME_TYPE_KOTH {
+                    self.send_to(babonet_id, koth::state_packet(self));
+                }
                 for frame in projectile::snapshot_frames(&self.projectiles) {
                     self.send_to(babonet_id, frame);
                 }
@@ -2474,6 +2486,19 @@ mod movement_authority_tests {
         assert!(map_allowed_for_game_type(GAME_TYPE_SND, "CHP-Lava"));
         assert!(!map_allowed_for_game_type(GAME_TYPE_SND, "DM-Field"));
         assert!(!map_allowed_for_game_type(GAME_TYPE_SND, "CTF-Alert"));
+    }
+
+    #[test]
+    fn koth_maps_are_isolated_to_koth_rotation() {
+        assert!(map_allowed_for_game_type(
+            crate::game::GAME_TYPE_KOTH,
+            "KOTH-Base"
+        ));
+        assert!(!map_allowed_for_game_type(
+            crate::game::GAME_TYPE_KOTH,
+            "CTF-Alert"
+        ));
+        assert!(!map_allowed_for_game_type(GAME_TYPE_CTF, "KOTH-Base"));
     }
 
     #[test]

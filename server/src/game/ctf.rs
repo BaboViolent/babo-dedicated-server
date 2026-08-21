@@ -292,7 +292,7 @@ fn freeze_players(game: &mut GameServer) {
     }
 }
 
-fn reset_player_spawn(game: &mut GameServer, slot: usize) {
+pub(crate) fn reset_player_spawn(game: &mut GameServer, slot: usize) {
     let team_id = match game.players.get(slot).and_then(|p| p.as_ref()) {
         Some(player) => player.team_id,
         None => return,
@@ -332,7 +332,7 @@ fn reset_player_spawn(game: &mut GameServer, slot: usize) {
     }
 }
 
-fn respawn_all_players(game: &mut GameServer) {
+pub(crate) fn respawn_all_players(game: &mut GameServer) {
     for slot in 0..MAX_PLAYER {
         let is_spectator = game
             .players
@@ -359,7 +359,7 @@ pub fn tick_match_lifecycle(game: &mut GameServer, dt: f32) {
     let mut just_finished = false;
     if game.round_state == GAME_PLAYING {
         let scores = match game.config.game_type {
-            GAME_TYPE_CTF => (game.blue_win, game.red_win),
+            GAME_TYPE_CTF | crate::game::GAME_TYPE_KOTH => (game.blue_win, game.red_win),
             1 => (game.blue_score, game.red_score),
             _ => {
                 let high_score = game
@@ -372,7 +372,10 @@ pub fn tick_match_lifecycle(game: &mut GameServer, dt: f32) {
                 (high_score, 0)
             }
         };
-        let limit = if game.config.game_type == GAME_TYPE_CTF {
+        let limit = if matches!(
+            game.config.game_type,
+            GAME_TYPE_CTF | crate::game::GAME_TYPE_KOTH
+        ) {
             game.config.win_limit
         } else {
             game.config.score_limit
@@ -420,6 +423,7 @@ pub(crate) fn restart_match(game: &mut GameServer) {
     game.round_state = GAME_PLAYING;
     game.round_end_remaining = 0.0;
     game.ctf.reset();
+    game.koth.reset_round();
     game.projectiles.clear();
     game.broadcast(packet::round_state(GAME_PLAYING, true));
     game.broadcast(packet::map_change(
@@ -442,6 +446,9 @@ pub(crate) fn restart_match(game: &mut GameServer) {
     }
     respawn_all_players(game);
     broadcast_flag_enum(game);
+    if game.config.game_type == crate::game::GAME_TYPE_KOTH {
+        game.broadcast(crate::game::koth::state_packet(game));
+    }
 }
 
 pub fn drop_carrier_flags(game: &mut GameServer, slot: usize) {

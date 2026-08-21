@@ -43,7 +43,7 @@ fn parse_command(text: &str) -> Option<VoteCommand> {
         && parts[1].eq_ignore_ascii_case("sv_gameType")
     {
         let game_type = parts[2].parse().ok()?;
-        return matches!(game_type, 0..=3).then_some(VoteCommand::GameType(game_type));
+        return matches!(game_type, 0..=4).then_some(VoteCommand::GameType(game_type));
     }
     None
 }
@@ -188,6 +188,7 @@ fn execute(game: &mut GameServer, command: VoteCommand) {
             game.map_spawns = spawns;
             game.map_grid = grid;
             game.ctf = super::CtfState::new(ctf::map_flag_pod(&game.map_spawns));
+            game.koth = super::KothState::new(&game.map_spawns.blue);
         }
         VoteCommand::GameType(game_type) => {
             game.config.game_type = game_type;

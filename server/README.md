@@ -20,7 +20,7 @@ cargo run --release
 
 ```sh
 export BV2_MAP=DM-Candyland
-export BV2_GAME_TYPE=0   # 0=DM  1=TDM  2=CTF
+export BV2_GAME_TYPE=0   # 0=DM  1=TDM  2=CTF  3=Champion  4=KOTH
 export BV2_BOTS=2
 cargo run --release
 ```
@@ -51,6 +51,12 @@ Open `http://localhost:3000` → Multiplayer → Connect → host `127.0.0.1`, p
 | `0` | Free-for-all deathmatch |
 | `1` | Team deathmatch |
 | `2` | Capture the flag |
+| `3` | Champion (`CHP-*` maps only) |
+| `4` | King of the Hill (`KOTH-*` maps only) |
+
+KOTH follows the original Team KOTH mod: the blue spawn markers define the
+hill, an uncontested team must hold it for 15 seconds to score, and the first
+team to `BV2_WIN_LIMIT` captures wins.
 
 Health: `curl http://localhost:8080/health`
 
@@ -92,7 +98,7 @@ verdict.
 | `BV2_MAX_PLAYERS` | `16` | Max clients (≤32) |
 | `BV2_BOTS` | `2` | Debug bots spawned at startup (0 to disable) |
 | `BV2_ENABLE_VOTE` | `false` | Allow votes for advertised maps and game modes |
-| `BV2_WIN_LIMIT` | `7` | CTF captures required to win (`0` = unlimited) |
+| `BV2_WIN_LIMIT` | `7` | CTF/KOTH captures required to win (`0` = unlimited) |
 | `BV2_BOT_SIM_SEED` | `1` | Deterministic bot-simulation run identifier |
 | `BV2_BOT_SIM_TICKS` | `3000` | Headless bot-simulation duration in ticks |
 | `BV2_BOT_SIM_SCENARIO` | `full_ctf_round` | Named deterministic bot scenario |

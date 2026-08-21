@@ -153,6 +153,19 @@ pub fn synchronize_timer(frame_id: i32, game_time_left: f32, round_time_left: f3
     encode_frame(ids::NET_SVCL_SYNCHRONIZE_TIMER, &p)
 }
 
+pub fn koth_state(controller: i8, blue: f32, red: f32, goal: f32, bounds: [f32; 4]) -> Vec<u8> {
+    let mut p = vec![0u8; 29];
+    p[0] = controller as u8;
+    p[1..5].copy_from_slice(&blue.to_le_bytes());
+    p[5..9].copy_from_slice(&red.to_le_bytes());
+    p[9..13].copy_from_slice(&goal.to_le_bytes());
+    for (index, value) in bounds.into_iter().enumerate() {
+        let start = 13 + index * 4;
+        p[start..start + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    encode_frame(ids::NET_SVCL_KOTH_STATE, &p)
+}
+
 pub fn map_list(name: &str) -> Vec<u8> {
     encode_frame(ids::NET_SVCL_MAP_LIST, &fixed_str16(name))
 }

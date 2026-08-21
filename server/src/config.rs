@@ -83,6 +83,17 @@ impl ServerConfig {
                 maps_dir.display()
             ));
         }
+        let prefix_ok = match self.game_type {
+            3 => self.map_name.starts_with("CHP-"),
+            4 => self.map_name.starts_with("KOTH-"),
+            _ => !self.map_name.starts_with("CHP-") && !self.map_name.starts_with("KOTH-"),
+        };
+        if !prefix_ok {
+            return Err(format!(
+                "map {} is not valid for game type {}",
+                self.map_name, self.game_type
+            ));
+        }
         Ok(())
     }
 
