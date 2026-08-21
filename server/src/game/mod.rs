@@ -479,23 +479,18 @@ impl GameServer {
     }
 
     pub fn connect_client(&mut self, babonet_id: BaboNetId, ip: String) -> Option<usize> {
-        self.connect_player(babonet_id, ip, None)
+        self.connect_player(babonet_id, ip, false)
     }
 
-    pub fn connect_external_bot(
-        &mut self,
-        babonet_id: BaboNetId,
-        ip: String,
-        identity: BotIdentity,
-    ) -> Option<usize> {
-        self.connect_player(babonet_id, ip, Some(identity))
+    pub fn connect_external_bot(&mut self, babonet_id: BaboNetId, ip: String) -> Option<usize> {
+        self.connect_player(babonet_id, ip, true)
     }
 
     fn connect_player(
         &mut self,
         babonet_id: BaboNetId,
         ip: String,
-        bot_identity: Option<BotIdentity>,
+        external_bot: bool,
     ) -> Option<usize> {
         let max = self.config.max_players.min(MAX_PLAYER);
         if !(0..max).any(|slot| self.players[slot].is_none()) {
@@ -510,8 +505,7 @@ impl GameServer {
         for slot in 0..max {
             if self.players[slot].is_none() {
                 let mut player = Player::new(slot, babonet_id, ip);
-                player.external_bot = bot_identity.is_some();
-                player.bot_identity = bot_identity.clone();
+                player.external_bot = external_bot;
                 if player.external_bot {
                     player.name = bot_display_name(&player.name);
                 }
@@ -520,11 +514,9 @@ impl GameServer {
                 self.broadcast(packet::newplayer(pid, babonet_id as i32));
                 self.send_to(babonet_id, packet::gameversion());
                 reconcile_bot_roster(self);
-                if let Some(identity) = &bot_identity {
-                    tracing::info!(slot, babonet_id, bot_name = %identity.name, bot_version = %identity.version, bot_author = %identity.author, "external bot connected");
-                } else {
-                    tracing::info!("player slot {slot} babonet {babonet_id}");
-                }
+                tracing::info!(
+                    "player slot {slot} babonet {babonet_id} external_bot={external_bot}"
+                );
                 return Some(slot);
             }
         }
@@ -946,6 +938,21 @@ impl GameServer {
                     self.disconnect_babonet(babonet_id);
                     return;
                 }
+                let external_bot = self.players[pid]
+                    .as_ref()
+                    .is_some_and(|player| player.external_bot && player.babonet_id == babonet_id);
+                let bot_handshake = if external_bot {
+                    match parse_bot_handshake(payload) {
+                        Ok(handshake) => Some(handshake),
+                        Err(reason) => {
+                            tracing::warn!(babonet_id, reason, "external bot handshake rejected");
+                            self.disconnect_babonet(babonet_id);
+                            return;
+                        }
+                    }
+                } else {
+                    None
+                };
                 let Some(p) = self.players.get_mut(pid).and_then(Option::as_mut) else {
                     return;
                 };
@@ -957,6 +964,19 @@ impl GameServer {
                 p.ping_cycle_started = Instant::now();
                 p.handshake_done = true;
                 p.status = PLAYER_STATUS_DEAD;
+                if let Some((identity, player_name)) = bot_handshake {
+                    p.name = bot_display_name(&normalize_bv2_player_name(&player_name));
+                    tracing::info!(
+                        slot = pid,
+                        babonet_id,
+                        bot_name = %identity.name,
+                        bot_version = %identity.version,
+                        bot_author = %identity.author,
+                        player_name = %p.name,
+                        "external bot authenticated"
+                    );
+                    p.bot_identity = Some(identity);
+                }
 
                 self.send_to(
                     babonet_id,
@@ -1660,6 +1680,99 @@ fn sanitize_player_name(text: &str) -> String {
     truncate_utf8_bytes(&clean, 31).to_string()
 }
 
+fn parse_bot_handshake(payload: &[u8]) -> Result<(BotIdentity, String), &'static str> {
+    if payload.get(17..21) != Some(b"BOT1") {
+        return Err("missing BOT1 identity block");
+    }
+    let mut offset = 21usize;
+    let mut field = |maximum: usize, allow_name_codes: bool| -> Result<String, &'static str> {
+        let length = *payload.get(offset).ok_or("truncated bot identity")? as usize;
+        offset += 1;
+        if length == 0 || length > maximum {
+            return Err("invalid bot identity field length");
+        }
+        let bytes = payload
+            .get(offset..offset + length)
+            .ok_or("truncated bot identity field")?;
+        offset += length;
+        let value = std::str::from_utf8(bytes).map_err(|_| "bot identity is not UTF-8")?;
+        if !allow_name_codes && value.chars().any(char::is_control) {
+            return Err("bot identity contains control characters");
+        }
+        Ok(value.trim().to_string())
+    };
+    let name = field(64, false)?;
+    let version = field(32, false)?;
+    let author = field(64, false)?;
+    let player_name = field(96, true)?;
+    if name.is_empty() || version.is_empty() || author.is_empty() || player_name.is_empty() {
+        return Err("bot handshake fields cannot be blank");
+    }
+    Ok((
+        BotIdentity {
+            name,
+            version,
+            author,
+        },
+        player_name,
+    ))
+}
+
+fn normalize_bv2_player_name(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '^' {
+            if let Some(next) = chars.peek().copied() {
+                if ('1'..='9').contains(&next) {
+                    out.push(char::from_u32(next.to_digit(10).unwrap()).unwrap());
+                    chars.next();
+                    continue;
+                }
+            }
+        }
+        let mapped = match ch as u32 {
+            199 => 128,
+            252 => 129,
+            233 => 130,
+            226 => 131,
+            228 => 132,
+            224 => 133,
+            229 => 134,
+            231 => 135,
+            234 => 136,
+            235 => 137,
+            232 => 138,
+            239 => 139,
+            238 => 140,
+            236 => 141,
+            196 => 142,
+            197 => 143,
+            201 => 144,
+            230 => 145,
+            198 => 146,
+            244 => 147,
+            246 => 148,
+            242 => 149,
+            251 => 150,
+            249 => 151,
+            255 => 152,
+            214 => 153,
+            220 => 154,
+            248 => 155,
+            163 => 156,
+            216 => 157,
+            215 => 158,
+            170 => 159,
+            code => code,
+        };
+        if let Some(mapped) = char::from_u32(mapped) {
+            out.push(mapped);
+        }
+    }
+    sanitize_player_name(&out)
+}
+
 fn bot_display_name(text: &str) -> String {
     const SUFFIX: &str = " [bot]";
     let clean = sanitize_player_name(text);
@@ -1712,9 +1825,10 @@ fn coalescible_packet(frame: &[u8]) -> bool {
 mod movement_authority_tests {
     use super::{
         bot_display_name, bound_client_movement, build_coord_frame, duration_ms_i16,
-        is_advertised_map, map_allowed_for_game_type, player_spawn_bytes, sanitize_player_name,
-        valid_movement_frame, valid_player_team, wire_player_slot, write_name31, CoordFrame,
-        GameServer, Player, GAME_TYPE_CTF, GAME_TYPE_SND, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
+        is_advertised_map, map_allowed_for_game_type, normalize_bv2_player_name,
+        parse_bot_handshake, player_spawn_bytes, sanitize_player_name, valid_movement_frame,
+        valid_player_team, wire_player_slot, write_name31, CoordFrame, GameServer, Player,
+        GAME_TYPE_CTF, GAME_TYPE_SND, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
     };
     use crate::config::ServerConfig;
     use crate::map::MapGrid;
@@ -1768,6 +1882,25 @@ mod movement_authority_tests {
         assert!(player.external_bot);
         assert!(!player.is_bot);
         assert_eq!(player.name, "Player0 [bot]");
+    }
+
+    #[test]
+    fn bot_handshake_has_independent_colored_player_name() {
+        let mut payload = vec![0u8; 21];
+        payload[17..21].copy_from_slice(b"BOT1");
+        for value in ["ArenaMind", "2.4.1", "Example Lab", "^4Rød ^1Runner"] {
+            payload.push(value.len() as u8);
+            payload.extend_from_slice(value.as_bytes());
+        }
+        let (identity, player_name) = parse_bot_handshake(&payload).unwrap();
+        assert_eq!(identity.name, "ArenaMind");
+        assert_eq!(identity.version, "2.4.1");
+        assert_eq!(identity.author, "Example Lab");
+        let display = bot_display_name(&normalize_bv2_player_name(&player_name));
+        assert!(display.starts_with('\u{4}'));
+        assert!(display.contains('\u{1}'));
+        assert!(display.ends_with(" [bot]"));
+        assert_ne!(identity.name, player_name);
     }
 
     #[test]

@@ -7,13 +7,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::extract::State;
+use axum::http::{header, HeaderValue};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::{mpsc, RwLock};
 use tracing_subscriber::EnvFilter;
 
@@ -266,47 +266,11 @@ async fn favicon() -> impl IntoResponse {
 }
 
 async fn ws_handler(State(game): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(game, socket, None))
+    ws.on_upgrade(move |socket| handle_socket(game, socket, false))
 }
 
-#[derive(Deserialize)]
-struct BotIdentityQuery {
-    name: String,
-    version: String,
-    author: String,
-}
-
-async fn bot_ws_handler(
-    Query(query): Query<BotIdentityQuery>,
-    State(game): State<AppState>,
-    ws: WebSocketUpgrade,
-) -> Response {
-    let identity = match validated_bot_identity(query) {
-        Ok(identity) => identity,
-        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
-    };
-    ws.on_upgrade(move |socket| handle_socket(game, socket, Some(identity)))
-        .into_response()
-}
-
-fn validated_bot_identity(query: BotIdentityQuery) -> Result<BotIdentity, String> {
-    fn field(label: &str, value: String, maximum: usize) -> Result<String, String> {
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(format!("bot {label} is required"));
-        }
-        if value.len() > maximum || value.chars().any(char::is_control) {
-            return Err(format!(
-                "bot {label} must be 1-{maximum} printable UTF-8 bytes"
-            ));
-        }
-        Ok(value.to_string())
-    }
-    Ok(BotIdentity {
-        name: field("name", query.name, 64)?,
-        version: field("version", query.version, 32)?,
-        author: field("author", query.author, 64)?,
-    })
+async fn bot_ws_handler(State(game): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(game, socket, true))
 }
 
 struct MovementBudget {
@@ -381,7 +345,7 @@ impl MovementBudget {
     }
 }
 
-async fn handle_socket(game: AppState, socket: WebSocket, bot_identity: Option<BotIdentity>) {
+async fn handle_socket(game: AppState, socket: WebSocket, external_bot: bool) {
     const OUTBOUND_QUEUE_CAPACITY: usize = 256;
     const MAX_BUFFERED_INBOUND: usize = 256 * 1024;
     const MAX_FRAMES_PER_MESSAGE: usize = 128;
@@ -398,8 +362,8 @@ async fn handle_socket(game: AppState, socket: WebSocket, bot_identity: Option<B
     {
         let mut g = game.write().await;
         g.register_session(babonet_id, tx);
-        let connected = if let Some(identity) = bot_identity {
-            g.connect_external_bot(babonet_id, ip, identity)
+        let connected = if external_bot {
+            g.connect_external_bot(babonet_id, ip)
         } else {
             g.connect_client(babonet_id, ip)
         };
@@ -481,35 +445,7 @@ async fn handle_socket(game: AppState, socket: WebSocket, bot_identity: Option<B
 
 #[cfg(test)]
 mod websocket_flow_tests {
-    use super::{
-        coalesce_movement_frames, take_complete_frame, validated_bot_identity, BotIdentityQuery,
-        MovementBudget,
-    };
-
-    #[test]
-    fn bot_upgrade_requires_bounded_reported_identity() {
-        let identity = validated_bot_identity(BotIdentityQuery {
-            name: " ExampleBot ".into(),
-            version: "1.2.3".into(),
-            author: "Arena Lab".into(),
-        })
-        .unwrap();
-        assert_eq!(identity.name, "ExampleBot");
-        assert_eq!(identity.version, "1.2.3");
-        assert_eq!(identity.author, "Arena Lab");
-        assert!(validated_bot_identity(BotIdentityQuery {
-            name: "".into(),
-            version: "1".into(),
-            author: "A".into(),
-        })
-        .is_err());
-        assert!(validated_bot_identity(BotIdentityQuery {
-            name: "Bot".into(),
-            version: "1\n2".into(),
-            author: "A".into(),
-        })
-        .is_err());
-    }
+    use super::{coalesce_movement_frames, take_complete_frame, MovementBudget};
 
     #[test]
     fn movement_budget_allows_small_jitter_burst_then_sheds_flood() {

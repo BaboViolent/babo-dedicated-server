@@ -18,15 +18,20 @@ and advance the Argo CD deployment.
 Programs can join as independently controlled bots at:
 
 ```text
-wss://<server>/bot/ws?name=MyBot&version=1.0.0&author=YourName
+wss://<server>/bot/ws
 ```
 
-This endpoint uses the same framed binary BV2 protocol as `/ws`. The URL-encoded
-`name` (1-64 bytes), `version` (1-32 bytes), and `author` (1-64 bytes) identify
-the bot implementation and are required before the WebSocket upgrade. The
-server marks the connection as an external bot and owns its visible identity:
+This endpoint uses the same framed binary BV2 protocol as `/ws`. External bots
+must append a `BOT1` identity block to `NET_CLSV_GAMEVERSION_ACCEPTED`. After
+the native 17-byte payload, write the ASCII magic `BOT1`, then four fields in
+order: implementation name, version, author, and in-game player name. Each
+field is one unsigned length byte followed by that many UTF-8 bytes. Maximum
+lengths are 64, 32, 64, and 96 bytes respectively.
 
-- every submitted name is sanitized and receives exactly one ` [bot]` suffix;
+- the in-game name is independent of the implementation name;
+- in-game names accept `^1` through `^9` colors, Unicode equivalents of Babo
+  Alt-code glyphs, or native Babo control/glyph bytes;
+- every in-game name is sanitized and receives exactly one ` [bot]` suffix;
 - the complete display name remains within the native 31-byte wire limit;
 - `/info` and CTF transition logs report the player as a bot;
 - `/info` publishes the reported values as `scoreboard[].botIdentity`;
@@ -36,8 +41,8 @@ server marks the connection as an external bot and owns its visible identity:
 - bots cannot create or vote in server votes.
 
 The connection flow is the normal client flow: receive `NET_SVCL_NEWPLAYER`
-and `NET_SVCL_GAMEVERSION`, answer with `NET_CLSV_GAMEVERSION_ACCEPTED`, send
-`NET_CLSV_SVCL_PLAYER_INFO`, request a team, request a spawn, then send normal
+and `NET_SVCL_GAMEVERSION`, answer with the extended
+`NET_CLSV_GAMEVERSION_ACCEPTED`, request a team, request a spawn, then send normal
 coordinate and action packets. Servers may still require their configured
 password in the version-accepted packet and apply the normal movement and
 application rate limits.
