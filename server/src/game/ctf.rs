@@ -589,8 +589,14 @@ mod tests {
         game.ctf.revision[0] = game.ctf.revision[0].wrapping_add(1);
         let payload = flag_enum_bytes(&game);
         assert_eq!(payload.len(), 34);
-        assert_eq!(u32::from_le_bytes(payload[26..30].try_into().unwrap()), before.wrapping_add(1));
-        assert_eq!(u32::from_le_bytes(payload[30..34].try_into().unwrap()), game.ctf.revision[1]);
+        assert_eq!(
+            u32::from_le_bytes(payload[26..30].try_into().unwrap()),
+            before.wrapping_add(1)
+        );
+        assert_eq!(
+            u32::from_le_bytes(payload[30..34].try_into().unwrap()),
+            game.ctf.revision[1]
+        );
     }
 
     fn dropped_interaction_happens(flag_id: usize, team: i8, distance: f32) -> bool {
