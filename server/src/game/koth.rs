@@ -102,24 +102,7 @@ pub fn tick_koth(game: &mut GameServer, dt: f32) {
         red |= player.team_id == PLAYER_TEAM_RED;
     }
 
-    game.koth.controller = match (blue, red) {
-        (true, true) => 2,
-        (true, false) => {
-            game.koth.blue_progress += dt;
-            game.koth.red_progress = 0.0;
-            0
-        }
-        (false, true) => {
-            game.koth.red_progress += dt;
-            game.koth.blue_progress = 0.0;
-            1
-        }
-        (false, false) => {
-            game.koth.blue_progress = 0.0;
-            game.koth.red_progress = 0.0;
-            -1
-        }
-    };
+    update_control(&mut game.koth, blue, red, dt);
 
     let scoring_team = if game.koth.blue_progress >= KOTH_HOLD_TIME {
         Some(PLAYER_TEAM_BLUE)
@@ -133,6 +116,27 @@ pub fn tick_koth(game: &mut GameServer, dt: f32) {
     } else if game.frame_id.rem_euclid(5) == 0 {
         game.broadcast(state_packet(game));
     }
+}
+
+fn update_control(state: &mut KothState, blue: bool, red: bool, dt: f32) {
+    state.controller = match (blue, red) {
+        (true, true) => 2,
+        (true, false) => {
+            state.blue_progress += dt;
+            state.red_progress = 0.0;
+            0
+        }
+        (false, true) => {
+            state.red_progress += dt;
+            state.blue_progress = 0.0;
+            1
+        }
+        (false, false) => {
+            state.blue_progress = 0.0;
+            state.red_progress = 0.0;
+            -1
+        }
+    };
 }
 
 fn score(game: &mut GameServer, team: i8) {
@@ -189,5 +193,23 @@ mod tests {
         assert_eq!(hill.bounds, [2.0, 5.0, 4.0, 8.0]);
         assert!(hill.contains([1.6, 4.0, 0.25]));
         assert!(!hill.contains([1.4, 4.0, 0.25]));
+    }
+
+    #[test]
+    fn contested_hill_pauses_both_counters_and_control_resets_the_opponent() {
+        let mut hill = KothState::new(&[[2.0, 4.0, 0.0], [5.0, 8.0, 0.0]]);
+        hill.blue_progress = 4.0;
+        hill.red_progress = 3.0;
+        update_control(&mut hill, true, true, 1.0);
+        assert_eq!(
+            (hill.controller, hill.blue_progress, hill.red_progress),
+            (2, 4.0, 3.0)
+        );
+
+        update_control(&mut hill, false, true, 1.0);
+        assert_eq!(
+            (hill.controller, hill.blue_progress, hill.red_progress),
+            (1, 0.0, 4.0)
+        );
     }
 }
