@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.7.2...v0.7.3) (2026-08-21)
+
+
+### Bug Fixes
+
+* **movement:** enforce player body collisions ([52f706b](https://github.com/BaboViolent/babo-dedicated-server/commit/52f706b804ef895e3fc03f032400251b22567c3b))
+
 ## [0.7.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.7.1...v0.7.2) (2026-08-21)
 
 
