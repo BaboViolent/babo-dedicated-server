@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.4](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.8.3...v0.8.4) (2026-08-21)
+
+
+### Bug Fixes
+
+* **chat:** allow spectator team messages ([954a75f](https://github.com/BaboViolent/babo-dedicated-server/commit/954a75fdedd9f0a18844193e87a2a90c64722989))
+
 ## [0.8.3](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.8.2...v0.8.3) (2026-08-21)
 
 
