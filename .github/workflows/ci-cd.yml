@@ -40,6 +40,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: zot.standouthost.com/standouthost/babo-dedicated-server:${{ github.ref_name }}
+          build-args: |
+            SERVER_VERSION=${{ github.ref_name }}
       - name: Update Argo CD image tag
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}

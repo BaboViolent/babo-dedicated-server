@@ -1,5 +1,7 @@
 FROM --platform=$BUILDPLATFORM rust:1-bookworm AS builder
 ARG TARGETARCH
+ARG SERVER_VERSION=development
+ENV BV2_RELEASE_VERSION=$SERVER_VERSION
 WORKDIR /build
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross \

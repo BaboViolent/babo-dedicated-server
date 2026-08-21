@@ -53,10 +53,13 @@ pub fn newplayer(player_id: i8, babonet_id: i32) -> Vec<u8> {
 }
 
 pub fn gameversion() -> Vec<u8> {
-    encode_frame(
-        ids::NET_SVCL_GAMEVERSION,
-        &ids::GAME_VERSION_SV.to_le_bytes(),
-    )
+    // The native contract only consumes the first four bytes. Web clients may
+    // consume the optional NUL-terminated release label that follows them.
+    let release = option_env!("BV2_RELEASE_VERSION").unwrap_or("development");
+    let mut payload = ids::GAME_VERSION_SV.to_le_bytes().to_vec();
+    payload.extend_from_slice(release.as_bytes());
+    payload.push(0);
+    encode_frame(ids::NET_SVCL_GAMEVERSION, &payload)
 }
 
 pub fn server_info(
@@ -190,4 +193,21 @@ pub fn read_str(payload: &[u8], off: usize, len: usize) -> String {
             String::from_utf8_lossy(&s[..end]).into_owned()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gameversion_keeps_native_prefix_and_appends_release_label() {
+        let frame = decode_frame(&gameversion()).unwrap().unwrap();
+        assert_eq!(frame.type_id, ids::NET_SVCL_GAMEVERSION);
+        assert_eq!(
+            u32::from_le_bytes(frame.payload[..4].try_into().unwrap()),
+            ids::GAME_VERSION_SV
+        );
+        assert_eq!(frame.payload.last(), Some(&0));
+        assert!(!read_str(&frame.payload, 4, frame.payload.len() - 4).is_empty());
+    }
 }
