@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.8.1...v0.8.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* **network:** measure ping before player spawn ([7559b9f](https://github.com/BaboViolent/babo-dedicated-server/commit/7559b9ff56da7deee89119caa254ce9262bbd10e))
+
 ## [0.8.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.8.0...v0.8.1) (2026-08-21)
 
 
