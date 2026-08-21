@@ -91,24 +91,26 @@ pub fn map_change(map_name: &str, game_type: i8) -> Vec<u8> {
     encode_frame(ids::NET_SVCL_MAP_CHANGE, &p)
 }
 
-pub fn change_flag_state(flag_id: i8, new_state: i8, player_id: i8, action: u8) -> Vec<u8> {
+pub fn change_flag_state(flag_id: i8, new_state: i8, player_id: i8, action: u8, revision: u32) -> Vec<u8> {
     // The original three fields remain in place for legacy clients. Modern
     // clients consume the appended action instead of inferring return versus
     // capture from potentially stale local state.
-    let mut p = [0u8; 4];
+    let mut p = [0u8; 8];
     p[0] = flag_id as u8;
     p[1] = new_state as u8;
     p[2] = player_id as u8;
     p[3] = action;
+    p[4..8].copy_from_slice(&revision.to_le_bytes());
     encode_frame(ids::NET_SVCL_CHANGE_FLAG_STATE, &p)
 }
 
-pub fn drop_flag(flag_id: i8, position: [f32; 3]) -> Vec<u8> {
-    let mut p = vec![0u8; 13];
+pub fn drop_flag(flag_id: i8, position: [f32; 3], revision: u32) -> Vec<u8> {
+    let mut p = vec![0u8; 17];
     p[0] = flag_id as u8;
     p[1..5].copy_from_slice(&position[0].to_le_bytes());
     p[5..9].copy_from_slice(&position[1].to_le_bytes());
     p[9..13].copy_from_slice(&position[2].to_le_bytes());
+    p[13..17].copy_from_slice(&revision.to_le_bytes());
     encode_frame(ids::NET_SVCL_DROP_FLAG, &p)
 }
 

@@ -30,6 +30,7 @@ pub struct CtfState {
     pub flag_pos: [[f32; 3]; 2],
     pub flag_pod: [[f32; 3]; 2],
     pub dropped_for: [f32; 2],
+    pub revision: [u32; 2],
 }
 
 impl CtfState {
@@ -39,6 +40,7 @@ impl CtfState {
             flag_pos: flag_pod,
             flag_pod,
             dropped_for: [0.0; 2],
+            revision: [0; 2],
         };
         s.reset();
         s
@@ -48,6 +50,8 @@ impl CtfState {
         self.flag_state = [FLAG_AT_POD, FLAG_AT_POD];
         self.flag_pos = self.flag_pod;
         self.dropped_for = [0.0; 2];
+        self.revision[0] = self.revision[0].wrapping_add(1);
+        self.revision[1] = self.revision[1].wrapping_add(1);
     }
 
     pub fn supports_ctf(&self) -> bool {
@@ -183,6 +187,7 @@ fn tick_red_flag(game: &mut GameServer, slot: usize, team: i8, pos: [f32; 3]) {
 fn take_flag(game: &mut GameServer, flag_id: usize, slot: usize) {
     let previous_state = game.ctf.flag_state[flag_id];
     game.ctf.flag_state[flag_id] = slot as i8;
+    game.ctf.revision[flag_id] = game.ctf.revision[flag_id].wrapping_add(1);
     game.ctf.dropped_for[flag_id] = 0.0;
     if let Some(p) = game.players[slot].as_mut() {
         p.flag_attempts += 1;
@@ -195,6 +200,7 @@ fn take_flag(game: &mut GameServer, flag_id: usize, slot: usize) {
 fn return_flag(game: &mut GameServer, flag_id: usize, slot: usize) {
     let previous_state = game.ctf.flag_state[flag_id];
     game.ctf.flag_state[flag_id] = FLAG_AT_POD;
+    game.ctf.revision[flag_id] = game.ctf.revision[flag_id].wrapping_add(1);
     game.ctf.flag_pos[flag_id] = game.ctf.flag_pod[flag_id];
     game.ctf.dropped_for[flag_id] = 0.0;
     if let Some(p) = game.players[slot].as_mut() {
@@ -211,12 +217,14 @@ fn capture(game: &mut GameServer, slot: usize, team: i8) {
     }
     if team == PLAYER_TEAM_BLUE {
         game.ctf.flag_state[1] = FLAG_AT_POD;
+        game.ctf.revision[1] = game.ctf.revision[1].wrapping_add(1);
         game.ctf.flag_pos[1] = game.ctf.flag_pod[1];
         game.blue_win += 1;
         game.blue_score = game.blue_win;
         broadcast_change_flag(game, 1, FLAG_AT_POD, slot, FLAG_ACTION_CAPTURE);
     } else {
         game.ctf.flag_state[0] = FLAG_AT_POD;
+        game.ctf.revision[0] = game.ctf.revision[0].wrapping_add(1);
         game.ctf.flag_pos[0] = game.ctf.flag_pod[0];
         game.red_win += 1;
         game.red_score = game.red_win;
@@ -441,9 +449,14 @@ pub fn drop_carrier_flags(game: &mut GameServer, slot: usize) {
         };
         game.ctf.flag_pos[flag_id] = position;
         game.ctf.flag_state[flag_id] = FLAG_DROPPED;
+        game.ctf.revision[flag_id] = game.ctf.revision[flag_id].wrapping_add(1);
         game.ctf.dropped_for[flag_id] = 0.0;
         log_flag_transition(game, "drop", flag_id, slot, slot as i8);
-        game.broadcast(packet::drop_flag(flag_id as i8, game.ctf.flag_pos[flag_id]));
+        game.broadcast(packet::drop_flag(
+            flag_id as i8,
+            game.ctf.flag_pos[flag_id],
+            game.ctf.revision[flag_id],
+        ));
     }
 }
 
@@ -460,6 +473,7 @@ fn recoverable_drop(game: &GameServer, position: [f32; 3]) -> bool {
 
 fn force_return_flag(game: &mut GameServer, flag_id: usize, message: &str) {
     game.ctf.flag_state[flag_id] = FLAG_AT_POD;
+    game.ctf.revision[flag_id] = game.ctf.revision[flag_id].wrapping_add(1);
     game.ctf.flag_pos[flag_id] = game.ctf.flag_pod[flag_id];
     game.ctf.dropped_for[flag_id] = 0.0;
     broadcast_flag_enum(game);
@@ -517,11 +531,12 @@ fn broadcast_change_flag(
         new_state,
         player_id as i8,
         action,
+        game.ctf.revision[flag_id as usize],
     ));
 }
 
 pub fn flag_enum_bytes(game: &GameServer) -> Vec<u8> {
-    let mut p = vec![0u8; 26];
+    let mut p = vec![0u8; 34];
     p[0] = game.ctf.flag_state[0] as u8;
     p[1] = game.ctf.flag_state[1] as u8;
     p[2..6].copy_from_slice(&game.ctf.flag_pos[0][0].to_le_bytes());
@@ -530,6 +545,8 @@ pub fn flag_enum_bytes(game: &GameServer) -> Vec<u8> {
     p[14..18].copy_from_slice(&game.ctf.flag_pos[1][0].to_le_bytes());
     p[18..22].copy_from_slice(&game.ctf.flag_pos[1][1].to_le_bytes());
     p[22..26].copy_from_slice(&game.ctf.flag_pos[1][2].to_le_bytes());
+    p[26..30].copy_from_slice(&game.ctf.revision[0].to_le_bytes());
+    p[30..34].copy_from_slice(&game.ctf.revision[1].to_le_bytes());
     p
 }
 
@@ -563,6 +580,18 @@ mod tests {
     use crate::config::ServerConfig;
     use crate::game::Player;
     use std::path::PathBuf;
+
+    #[test]
+    fn flag_snapshot_carries_monotonic_revisions_for_stale_packet_rejection() {
+        let mut game = game();
+        let before = game.ctf.revision[0];
+        game.ctf.flag_state[0] = FLAG_DROPPED;
+        game.ctf.revision[0] = game.ctf.revision[0].wrapping_add(1);
+        let payload = flag_enum_bytes(&game);
+        assert_eq!(payload.len(), 34);
+        assert_eq!(u32::from_le_bytes(payload[26..30].try_into().unwrap()), before.wrapping_add(1));
+        assert_eq!(u32::from_le_bytes(payload[30..34].try_into().unwrap()), game.ctf.revision[1]);
+    }
 
     fn dropped_interaction_happens(flag_id: usize, team: i8, distance: f32) -> bool {
         let mut game = game();
