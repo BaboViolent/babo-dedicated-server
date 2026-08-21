@@ -19,6 +19,43 @@ const FLAME_BURN_INTERVAL: f32 = 20.0 / 30.0;
 const ROCKET_EXPLOSION_RADIUS: f32 = 2.0;
 const ROCKET_REMOTE_DETONATE_DELAY: f32 = 0.25;
 
+fn kind_name(kind: i8) -> &'static str {
+    match kind {
+        ROCKET => "rocket",
+        GRENADE => "grenade",
+        LIFE_PICKUP => "health",
+        WEAPON_PICKUP => "weapon",
+        GRENADE_PICKUP => "grenade-pack",
+        MOLOTOV => "molotov",
+        FLAME => "flame",
+        _ => "unknown",
+    }
+}
+
+pub fn log_diagnostic_snapshot(game: &GameServer) {
+    let entities: Vec<_> = game
+        .projectiles
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "id": p.unique_id,
+                "type": p.kind,
+                "kind": kind_name(p.kind),
+                "owner": p.owner,
+                "weaponId": p.weapon_id,
+                "position": p.position,
+                "velocity": p.velocity,
+                "duration": p.duration,
+                "age": p.time_since_thrown,
+                "movementLock": p.movement_lock,
+                "stickToPlayer": p.stick_to_player,
+                "stickFor": p.stick_for,
+            })
+        })
+        .collect();
+    tracing::info!(target: "bv2_diagnostics", event = "world-entities", frame = game.frame_id, entities = %serde_json::Value::Array(entities));
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerProjectile {
     pub unique_id: i32,
@@ -649,6 +686,9 @@ pub fn tick_projectiles(game: &mut GameServer, dt: f32) {
 
     game.projectiles = survivors;
     for unique_id in deleted {
+        if game.diagnostics_enabled {
+            tracing::info!(target: "bv2_diagnostics", event = "world-entity-delete", id = unique_id);
+        }
         game.broadcast(packet::encode_frame(
             ids::NET_SVCL_DELETE_PROJECTILE,
             &unique_id.to_le_bytes(),

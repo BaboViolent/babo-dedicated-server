@@ -304,6 +304,7 @@ pub struct GameServer {
     pub map_transfers: Vec<MapTransfer>,
     pub projectiles: Vec<projectile::ServerProjectile>,
     pub next_projectile_id: i32,
+    diagnostics_enabled: bool,
     pub ctf: CtfState,
     pub voting_enabled: bool,
     pub vote: VoteState,
@@ -400,6 +401,12 @@ impl GameServer {
             map_transfers: Vec::new(),
             projectiles: Vec::new(),
             next_projectile_id: 1,
+            diagnostics_enabled: std::env::var("BV2_DIAGNOSTICS").is_ok_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            }),
             ctf: ctf_state,
             voting_enabled: std::env::var("BV2_ENABLE_VOTE").is_ok_and(|value| {
                 matches!(
@@ -671,6 +678,9 @@ impl GameServer {
         if self.round_state == GAME_PLAYING {
             tick_bots(self, dt);
             projectile::tick_projectiles(self, dt);
+            if self.diagnostics_enabled && self.frame_id.rem_euclid(12) == 0 {
+                projectile::log_diagnostic_snapshot(self);
+            }
             shoot::tick_special_weapons(self, dt);
             shoot::tick_photon_beams(self);
             ctf::tick_ctf(self, dt);
