@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.13](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.12...v0.4.13) (2026-08-21)
+
+
+### Bug Fixes
+
+* **ctf:** ship ordered flag state contract ([b138542](https://github.com/BaboViolent/babo-dedicated-server/commit/b1385423063fafeeb71298c16660be846986db28))
+* **ctf:** version authoritative flag updates ([a0820bf](https://github.com/BaboViolent/babo-dedicated-server/commit/a0820bfff3f1ae61c3133d2ce36c7be0049119b3))
+
 ## [0.4.12](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.4.11...v0.4.12) (2026-08-20)
 
 
