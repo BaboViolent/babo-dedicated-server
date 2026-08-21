@@ -768,10 +768,7 @@ impl GameServer {
                 if player.is_bot {
                     continue;
                 }
-                if player.status == PLAYER_STATUS_LOADING {
-                    continue;
-                }
-                if player.status == PLAYER_STATUS_DEAD && !player.spawned_once {
+                if !player.handshake_done {
                     continue;
                 }
                 if !player.wait_for_pong
@@ -794,10 +791,7 @@ impl GameServer {
                 let Some(player) = self.players[slot].as_mut() else {
                     continue;
                 };
-                if player.status == PLAYER_STATUS_LOADING {
-                    continue;
-                }
-                if player.status == PLAYER_STATUS_DEAD && !player.spawned_once {
+                if !player.handshake_done {
                     continue;
                 }
                 let pong_wait = player.ping_sent_at.map(|sent| sent.elapsed());
@@ -2019,7 +2013,7 @@ mod movement_authority_tests {
     };
     use crate::config::ServerConfig;
     use crate::map::MapGrid;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     fn map() -> MapGrid {
         MapGrid::fixture(10, &[])
@@ -2422,6 +2416,41 @@ mod movement_authority_tests {
     fn scoreboard_ping_is_encoded_as_elapsed_milliseconds() {
         assert_eq!(duration_ms_i16(Duration::from_millis(42)), 42);
         assert_eq!(duration_ms_i16(Duration::from_secs(60)), i16::MAX);
+    }
+
+    #[test]
+    fn authenticated_spectators_are_pinged_before_their_first_spawn() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 1,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        let mut spectator = Player::new(0, 7, "test".into());
+        spectator.handshake_done = true;
+        spectator.team_id = PLAYER_TEAM_SPECTATOR;
+        spectator.status = PLAYER_STATUS_DEAD;
+        spectator.spawned_once = false;
+        spectator.ping_cycle_started = Instant::now() - Duration::from_secs(2);
+        game.players[0] = Some(spectator);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+        game.register_session(7, tx);
+
+        game.tick(0.0);
+
+        let packets: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(packets.iter().any(|packet| {
+            crate::net::packet::decode_frame(packet).is_ok_and(|frame| {
+                frame.is_some_and(|f| f.type_id == crate::net::ids::NET_SVCL_PING)
+            })
+        }));
     }
 
     #[test]
