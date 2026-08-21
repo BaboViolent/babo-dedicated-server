@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.8.2...v0.8.3) (2026-08-21)
+
+
+### Bug Fixes
+
+* **bots:** leave the arena before rejoining from spectator ([f242ea8](https://github.com/BaboViolent/babo-dedicated-server/commit/f242ea89bd5b2fa04a99d82060490a30f30166ac))
+
 ## [0.8.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.8.1...v0.8.2) (2026-08-21)
 
 
