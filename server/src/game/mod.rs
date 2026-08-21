@@ -1521,12 +1521,10 @@ impl GameServer {
                 };
                 let team = if requested_team == CHAT_TEAM_ALL {
                     CHAT_TEAM_ALL
-                } else if matches!(sender.team_id, PLAYER_TEAM_BLUE | PLAYER_TEAM_RED)
-                    && requested_team == sender.team_id
-                {
+                } else if requested_team == sender.team_id {
                     sender.team_id
                 } else {
-                    // Spectators may use global chat, but have no private team channel.
+                    // A sender cannot write to another team's private channel.
                     return;
                 };
                 let raw_message = packet::read_str(payload, 1, 130);
@@ -2440,6 +2438,22 @@ mod movement_authority_tests {
         assert_eq!(game.recent_chat[0].player_name, "\u{3}Ali\u{9b}ce");
         assert!(receivers[1].try_recv().is_err());
         assert!(receivers[2].try_recv().is_err());
+
+        let mut spectator_message = vec![0u8; 131];
+        spectator_message[0] = PLAYER_TEAM_SPECTATOR as u8;
+        spectator_message[1] = b's';
+        game.handle_frame(3, crate::net::ids::NET_CLSV_SVCL_CHAT, &spectator_message);
+        assert!(receivers[0].try_recv().is_err());
+        assert!(receivers[1].try_recv().is_err());
+        let spectator_frame = receivers[2].try_recv().unwrap();
+        let spectator_chat = crate::net::packet::decode_frame(&spectator_frame)
+            .unwrap()
+            .unwrap();
+        assert_eq!(spectator_chat.payload[0] as i8, PLAYER_TEAM_SPECTATOR);
+        assert_eq!(
+            crate::net::packet::read_str(&spectator_chat.payload, 1, 130),
+            "P2: s"
+        );
 
         game.handle_frame(
             3,
