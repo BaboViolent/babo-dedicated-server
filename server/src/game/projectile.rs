@@ -190,7 +190,11 @@ impl ServerProjectile {
             for v in &mut self.velocity {
                 *v += *v * dt * 3.0;
             }
-        } else {
+        } else if self.kind == MOLOTOV
+            || ((self.kind == GRENADE
+                || matches!(self.kind, LIFE_PICKUP | WEAPON_PICKUP | GRENADE_PICKUP))
+                && (magnitude(self.velocity) > 0.5 || self.position[2] > 0.2))
+        {
             add_scaled(&mut self.position, self.velocity, dt);
             self.velocity[2] -= GRAVITY * dt;
         }
@@ -601,8 +605,24 @@ pub fn tick_projectiles(game: &mut GameServer, dt: f32) {
             }
         }
 
-        let (wall_point, normal) = game.map_grid.ray_test(old, projectile.position);
-        let hit_wall = segment_hit_t(old, projectile.position, wall_point) < 0.999;
+        let (mut wall_point, mut normal) = game.map_grid.ray_test(old, projectile.position);
+        let mut wall_t = segment_hit_t(old, projectile.position, wall_point);
+        // Native Map::rayTest includes the horizontal ground plane. The Rust
+        // tile ray only covers walls, so thrown pickups could fall through z=0
+        // forever while remaining authoritative.
+        if old[2] >= 0.0 && projectile.position[2] < 0.0 {
+            let floor_t = old[2] / (old[2] - projectile.position[2]);
+            if floor_t < wall_t {
+                wall_t = floor_t;
+                wall_point = [
+                    old[0] + (projectile.position[0] - old[0]) * floor_t,
+                    old[1] + (projectile.position[1] - old[1]) * floor_t,
+                    0.0,
+                ];
+                normal = [0.0, 0.0, 1.0];
+            }
+        }
+        let hit_wall = wall_t < 0.999;
         let hit_player = if projectile.kind == ROCKET || projectile.kind == MOLOTOV {
             (0..MAX_PLAYER)
                 .filter_map(|slot| {
@@ -922,6 +942,48 @@ mod tests {
         let reflected = reflect([2.0, -3.0, 1.0], [0.0, 1.0, 0.0]);
         let bounced = reflected.map(|v| v * BOUNCE);
         assert_eq!(bounced, [1.3, 1.9499999, 0.65]);
+    }
+
+    #[test]
+    fn dropped_weapon_bounces_and_settles_on_native_ground_plane() {
+        let config = ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: PathBuf::from("../Content/main"),
+            map_name: "CTF-BurialMound".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: 0,
+            max_players: 2,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 15.0 * 60.0,
+        };
+        let mut game = GameServer::new(config);
+        let position = game.pick_spawn_for(PLAYER_TEAM_BLUE, None);
+        game.projectiles.push(ServerProjectile::pickup(
+            77,
+            1,
+            WEAPON_PICKUP,
+            2,
+            position,
+            [1.0, 0.0, 3.0],
+        ));
+
+        for _ in 0..300 {
+            tick_projectiles(&mut game, 0.02);
+            assert!(
+                game.projectiles[0].position[2] >= 0.0,
+                "pickup crossed the ground plane: {:?}",
+                game.projectiles[0]
+            );
+        }
+
+        let pickup = &game.projectiles[0];
+        assert!(
+            pickup.position[2] >= 0.0,
+            "pickup fell below ground: {pickup:?}"
+        );
     }
 
     #[test]
