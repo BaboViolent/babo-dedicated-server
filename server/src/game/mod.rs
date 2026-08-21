@@ -38,6 +38,9 @@ pub const PLAYER_TEAM_BLUE: i8 = 0;
 pub const PLAYER_TEAM_RED: i8 = 1;
 /** Chat addressed to every team (ServerRecv.cpp:562). */
 pub const CHAT_TEAM_ALL: i8 = -2;
+const IDLE_SPECTATE_SECONDS: f32 = 30.0;
+const IDLE_COUNTDOWN_SECONDS: u8 = 10;
+const IDLE_MOVEMENT_EPSILON_SQ: f32 = 0.05 * 0.05;
 const RECENT_CHAT_LIMIT: usize = 20;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -193,6 +196,10 @@ pub struct Player {
     pub photon_to: [f32; 3],
     /// Server time since the last accepted client movement sample.
     pub coord_elapsed: f32,
+    /// Time spent at effectively the same world position while alive.
+    pub idle_elapsed: f32,
+    pub idle_position: [f32; 3],
+    pub idle_warning: Option<u8>,
 }
 
 impl Player {
@@ -255,6 +262,9 @@ impl Player {
             photon_from: [0.0; 3],
             photon_to: [0.0; 3],
             coord_elapsed: 0.0,
+            idle_elapsed: 0.0,
+            idle_position: [0.0, 0.0, 0.25],
+            idle_warning: None,
         }
     }
 
@@ -719,6 +729,7 @@ impl GameServer {
             ctf::tick_ctf(self, dt);
             snd::tick_snd(self);
         }
+        self.tick_idle_spectators(dt);
         // Transition packets provide immediate feedback; this compact snapshot
         // periodically repairs any client that joined or loaded a map across a
         // transition boundary. WebSocket ordering makes the latest snapshot
@@ -835,6 +846,100 @@ impl GameServer {
                 };
                 self.send_to(pi.babonet_id, packet::player_ping(j as i8, pj.ping_ms));
             }
+        }
+    }
+
+    fn idle_message(message: &str) -> Vec<u8> {
+        let mut body = vec![0u8; 132];
+        body[1] = CHAT_TEAM_ALL as u8;
+        let bytes = message.as_bytes();
+        let length = bytes.len().min(129);
+        body[2..2 + length].copy_from_slice(&bytes[..length]);
+        packet::encode_frame(ids::NET_SVCL_MSG, &body)
+    }
+
+    fn tick_idle_spectators(&mut self, dt: f32) {
+        let mut warnings = Vec::new();
+        let mut idle_slots = Vec::new();
+
+        for slot in 0..MAX_PLAYER {
+            let Some(player) = self.players[slot].as_mut() else {
+                continue;
+            };
+            if !matches!(player.team_id, PLAYER_TEAM_BLUE | PLAYER_TEAM_RED)
+                || player.status == PLAYER_STATUS_LOADING
+            {
+                player.idle_elapsed = 0.0;
+                player.idle_position = player.cf.position;
+                player.idle_warning = None;
+                continue;
+            }
+
+            let dx = player.cf.position[0] - player.idle_position[0];
+            let dy = player.cf.position[1] - player.idle_position[1];
+            let moving = player.cf.vel[0] * player.cf.vel[0] + player.cf.vel[1] * player.cf.vel[1]
+                >= IDLE_MOVEMENT_EPSILON_SQ;
+            if player.status == PLAYER_STATUS_ALIVE
+                && moving
+                && dx * dx + dy * dy >= IDLE_MOVEMENT_EPSILON_SQ
+            {
+                player.idle_elapsed = 0.0;
+                player.idle_position = player.cf.position;
+                player.idle_warning = None;
+                continue;
+            }
+
+            player.idle_elapsed += dt;
+            let remaining = (IDLE_SPECTATE_SECONDS - player.idle_elapsed)
+                .ceil()
+                .max(0.0) as u8;
+            if remaining == 0 {
+                idle_slots.push(slot);
+            } else if remaining <= IDLE_COUNTDOWN_SECONDS && player.idle_warning != Some(remaining)
+            {
+                player.idle_warning = Some(remaining);
+                if !player.is_bot || player.external_bot {
+                    warnings.push((
+                        player.babonet_id,
+                        format!("Move within {remaining}s or you will be moved to spectators."),
+                    ));
+                }
+            }
+        }
+
+        for (babonet_id, message) in warnings {
+            self.send_to(babonet_id, Self::idle_message(&message));
+        }
+        for slot in idle_slots {
+            ctf::drop_carrier_flags(self, slot);
+            let Some(player) = self.players[slot].as_mut() else {
+                continue;
+            };
+            let name = player.name.clone();
+            let babonet_id = player.babonet_id;
+            let notify_client = !player.is_bot || player.external_bot;
+            player.team_id = PLAYER_TEAM_SPECTATOR;
+            player.status = PLAYER_STATUS_DEAD;
+            player.life = 0.0;
+            player.time_to_spawn = 0.0;
+            player.idle_elapsed = 0.0;
+            player.idle_warning = None;
+            self.broadcast(packet::encode_frame(
+                ids::NET_CLSV_SVCL_TEAM_REQUEST,
+                &[slot as u8, PLAYER_TEAM_SPECTATOR as u8],
+            ));
+            shoot::broadcast_enum(self, slot);
+            if notify_client {
+                self.send_to(
+                    babonet_id,
+                    Self::idle_message("You were moved to spectators for inactivity."),
+                );
+            }
+            tracing::info!(
+                player = slot,
+                player_name = name,
+                "idle player moved to spectators"
+            );
         }
     }
 
@@ -1909,7 +2014,8 @@ mod movement_authority_tests {
         duration_ms_i16, is_advertised_map, map_allowed_for_game_type, normalize_bv2_player_name,
         parse_bot_handshake, player_spawn_bytes, sanitize_player_name, valid_movement_frame,
         valid_player_team, wire_player_slot, write_name31, CoordFrame, GameServer, Player,
-        GAME_TYPE_CTF, GAME_TYPE_SND, MAX_PLAYER, PLAYER_TEAM_BLUE, PLAYER_TEAM_RED,
+        GAME_TYPE_CTF, GAME_TYPE_SND, MAX_PLAYER, PLAYER_STATUS_ALIVE, PLAYER_STATUS_DEAD,
+        PLAYER_TEAM_BLUE, PLAYER_TEAM_RED, PLAYER_TEAM_SPECTATOR,
     };
     use crate::config::ServerConfig;
     use crate::map::MapGrid;
@@ -2339,6 +2445,74 @@ mod movement_authority_tests {
         game.players[1] = Some(Player::new(1, 2, "joining".into()));
         assert!(!game.team_join_allowed(1, PLAYER_TEAM_BLUE));
         assert!(game.team_join_allowed(1, PLAYER_TEAM_RED));
+    }
+
+    #[test]
+    fn idle_player_gets_countdown_then_moves_to_spectators() {
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 2,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        let mut player = Player::new(0, 7, "test".into());
+        player.name = "Idle".into();
+        player.team_id = PLAYER_TEAM_BLUE;
+        player.status = PLAYER_STATUS_ALIVE;
+        player.cf.position = [5.5, 5.5, 0.25];
+        player.idle_position = player.cf.position;
+        game.players[0] = Some(player);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+        game.register_session(7, tx);
+
+        game.tick_idle_spectators(20.01);
+        let warning = rx.try_recv().expect("idle countdown warning");
+        let frame = crate::net::packet::decode_frame(&warning).unwrap().unwrap();
+        assert_eq!(frame.type_id, crate::net::ids::NET_SVCL_MSG);
+        assert!(String::from_utf8_lossy(&frame.payload).contains("10s"));
+
+        game.tick_idle_spectators(10.0);
+        let player = game.players[0].as_ref().unwrap();
+        assert_eq!(player.team_id, PLAYER_TEAM_SPECTATOR);
+        assert_eq!(player.status, PLAYER_STATUS_DEAD);
+    }
+
+    #[test]
+    fn real_movement_resets_idle_countdown() {
+        let mut player = Player::new(0, 7, "test".into());
+        player.team_id = PLAYER_TEAM_BLUE;
+        player.status = PLAYER_STATUS_ALIVE;
+        player.cf.position = [5.5, 5.5, 0.25];
+        player.idle_position = player.cf.position;
+        player.idle_elapsed = 25.0;
+        let mut game = GameServer::new(ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "CTF-Alert".into(),
+            game_name: "test".into(),
+            password: String::new(),
+            game_type: GAME_TYPE_CTF,
+            max_players: 2,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        game.players[0] = Some(player);
+        game.players[0].as_mut().unwrap().cf.position[0] += 0.1;
+        game.players[0].as_mut().unwrap().cf.vel[0] = 1.0;
+
+        game.tick_idle_spectators(10.0);
+        let player = game.players[0].as_ref().unwrap();
+        assert_eq!(player.team_id, PLAYER_TEAM_BLUE);
+        assert_eq!(player.idle_elapsed, 0.0);
     }
 
     #[test]
