@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.1...v0.9.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* **container:** block vulnerable release images ([f467a29](https://github.com/BaboViolent/babo-dedicated-server/commit/f467a2910a283dbb808a75e41948ee290ab5f4f6))
+
 ## [0.9.1](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.0...v0.9.1) (2026-08-21)
 
 
