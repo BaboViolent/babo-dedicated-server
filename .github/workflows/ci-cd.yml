@@ -44,6 +44,7 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
       - uses: docker/build-push-action@v7
+        id: push-image
         with:
           context: .
           file: server/Dockerfile
@@ -52,6 +53,16 @@ jobs:
           tags: zot.standouthost.com/standouthost/babo-dedicated-server:${{ github.ref_name }}
           build-args: |
             SERVER_VERSION=${{ github.ref_name }}
+      - uses: sigstore/cosign-installer@v4.0.0
+      - name: Sign and verify published image
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+        run: |
+          image="zot.standouthost.com/standouthost/babo-dedicated-server@${{ steps.push-image.outputs.digest }}"
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$image"
+          cosign verify --key env://COSIGN_PUBLIC_KEY "$image"
       - name: Update Argo CD image tag
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
