@@ -28,7 +28,7 @@ RUN case "$TARGETARCH" in \
     && cargo build --release --target "$target" \
     && cp "target/$target/release/bv2-server" /tmp/bv2-server
 
-FROM debian:bookworm-slim
+FROM cgr.dev/chainguard/glibc-dynamic:latest
 COPY --from=builder /tmp/bv2-server /usr/local/bin/bv2-server
 COPY Content/main/maps /app/Content/main/maps
 ENV BV2_BIND=0.0.0.0:8080
