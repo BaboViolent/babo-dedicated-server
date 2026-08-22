@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.3](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.2...v0.9.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* **ci:** publish project OCI metadata ([75cea26](https://github.com/BaboViolent/babo-dedicated-server/commit/75cea26eda6e6674c42e4c4e948c014204e6245a))
+* **ci:** use Zot-compatible Cosign signatures ([9a22a67](https://github.com/BaboViolent/babo-dedicated-server/commit/9a22a67ecafd12b75897c0099794c67f3b8c300e))
+
 ## [0.9.2](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.1...v0.9.2) (2026-08-22)
 
 
