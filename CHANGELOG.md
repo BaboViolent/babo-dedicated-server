@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.3...v0.9.4) (2026-08-22)
+
+
+### Bug Fixes
+
+* **release:** publish OCI index metadata ([2522b88](https://github.com/BaboViolent/babo-dedicated-server/commit/2522b883e2c6571f9438d118df5ef6ebcc63884f))
+
 ## [0.9.3](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.2...v0.9.3) (2026-08-22)
 
 
