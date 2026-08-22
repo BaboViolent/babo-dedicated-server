@@ -28,5 +28,7 @@ jobs:
         run: |
           gh pr list --state open --label "autorelease: pending" --json number --jq '.[].number' |
             while read -r pr; do
-              [ -n "$pr" ] && gh pr merge "$pr" --auto --squash
+              if [ -n "$pr" ]; then
+                gh pr merge "$pr" --auto --squash || gh pr merge "$pr" --squash
+              fi
             done
