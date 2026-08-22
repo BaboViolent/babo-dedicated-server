@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.5](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.4...v0.9.5) (2026-08-22)
+
+
+### Bug Fixes
+
+* **release:** use canonical BaboViolent image path ([33dd3ca](https://github.com/BaboViolent/babo-dedicated-server/commit/33dd3caa4b983d60ea3594d4544fd9dd3dc7156a))
+
 ## [0.9.4](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.3...v0.9.4) (2026-08-22)
 
 
