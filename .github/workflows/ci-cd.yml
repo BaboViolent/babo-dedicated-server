@@ -43,6 +43,15 @@ jobs:
           registry: zot.standouthost.com
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+      - uses: docker/metadata-action@v6
+        id: image-metadata
+        with:
+          images: zot.standouthost.com/standouthost/babo-dedicated-server
+          tags: type=raw,value=${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.title=Babo Dedicated Server
+            org.opencontainers.image.description=Dedicated game server for Babo Violent 2
+            org.opencontainers.image.vendor=BaboViolent
       - uses: docker/build-push-action@v7
         id: push-image
         with:
@@ -50,7 +59,8 @@ jobs:
           file: server/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: zot.standouthost.com/standouthost/babo-dedicated-server:${{ github.ref_name }}
+          tags: ${{ steps.image-metadata.outputs.tags }}
+          labels: ${{ steps.image-metadata.outputs.labels }}
           build-args: |
             SERVER_VERSION=${{ github.ref_name }}
       - uses: sigstore/cosign-installer@v4.0.0
