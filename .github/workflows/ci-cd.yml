@@ -45,10 +45,16 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
       - uses: docker/metadata-action@v6
         id: image-metadata
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
           images: zot.standouthost.com/standouthost/babo-dedicated-server
           tags: type=raw,value=${{ github.ref_name }}
           labels: |
+            org.opencontainers.image.title=Babo Dedicated Server
+            org.opencontainers.image.description=Dedicated game server for Babo Violent 2
+            org.opencontainers.image.vendor=BaboViolent
+          annotations: |
             org.opencontainers.image.title=Babo Dedicated Server
             org.opencontainers.image.description=Dedicated game server for Babo Violent 2
             org.opencontainers.image.vendor=BaboViolent
@@ -61,6 +67,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.image-metadata.outputs.tags }}
           labels: ${{ steps.image-metadata.outputs.labels }}
+          annotations: ${{ steps.image-metadata.outputs.annotations }}
           build-args: |
             SERVER_VERSION=${{ github.ref_name }}
       - uses: sigstore/cosign-installer@v4.1.2
