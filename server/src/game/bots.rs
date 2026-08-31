@@ -732,7 +732,7 @@ fn find_cover_goal(
     best.map(|(goal, _)| goal)
 }
 
-fn flank_goal(slot: usize, from: [f32; 3], target: [f32; 3]) -> [f32; 2] {
+fn flank_goal(slot: usize, from: [f32; 3], target: [f32; 3], weapon_id: i8) -> [f32; 2] {
     let dx = target[0] - from[0];
     let dy = target[1] - from[1];
     let distance = dx.hypot(dy).max(0.01);
@@ -741,10 +741,16 @@ fn flank_goal(slot: usize, from: [f32; 3], target: [f32; 3]) -> [f32; 2] {
     // Team slots alternate globally (blue even, red odd), so raw parity puts
     // an entire team on one flank. Alternate by the within-team slot index.
     let side = if (slot / 2) & 1 == 0 { 1.0 } else { -1.0 };
-    let lateral = (1.1 + (slot % 3) as f32 * 0.35) * side;
+    // Flame range is only 3 units: the general flank sits 2.7–3.1 units
+    // from the enemy, leaving no room for aim error or a retreating target.
+    let (standoff, lateral) = match weapon_id {
+        7 => (1.5, 0.35 * side),
+        5 => (5.0, (1.1 + (slot % 3) as f32 * 0.35) * side),
+        _ => (2.5, (1.1 + (slot % 3) as f32 * 0.35) * side),
+    };
     [
-        target[0] - nx * 2.5 - ny * lateral,
-        target[1] - ny * 2.5 + nx * lateral,
+        target[0] - nx * standoff - ny * lateral,
+        target[1] - ny * standoff + nx * lateral,
     ]
 }
 
@@ -1197,14 +1203,19 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
                                     && (target[0] - pod[0]).hypot(target[1] - pod[1])
                                         <= BOT_DEFEND_PRESSURE_RANGE
                                 {
-                                    flank_goal(slot, my_pos, target)
+                                    flank_goal(slot, my_pos, target, p.weapon_id)
                                 } else {
                                     guard_post
                                 }
                             })
                         })
                 } else if let Some((target_slot, _)) = combat_target {
-                    flank_goal(slot, my_pos, live_positions[target_slot].unwrap())
+                    flank_goal(
+                        slot,
+                        my_pos,
+                        live_positions[target_slot].unwrap(),
+                        p.weapon_id,
+                    )
                 } else {
                     p.bot_brain.last_known_enemy
                 }
@@ -1560,10 +1571,11 @@ pub fn tick_bots(game: &mut GameServer, dt: f32) {
         dy += separation[1] * separation_weight;
         if combat_target.is_some() && !carrying_enemy_flag && !escorting_flag_carrier {
             // Orbit in alternating arcs instead of forming a straight charging line.
+            let orbit_speed = if p.weapon_id == 7 { 0.2 } else { 0.75 };
             let orbit = if ((p.bot_wander_angle / 3.0) as i32) & 1 == 0 {
-                0.75
+                orbit_speed
             } else {
-                -0.75
+                -orbit_speed
             };
             let base_len = dx.hypot(dy).max(0.05);
             let (forward_x, forward_y) = (dx, dy);
@@ -2083,6 +2095,151 @@ pub fn reconcile_bot_roster(game: &mut GameServer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn weapon_duel(weapon_id: i8) -> GameServer {
+        let mut game = GameServer::new(crate::config::ServerConfig {
+            bind_addr: "127.0.0.1:0".into(),
+            content_root: std::path::PathBuf::from("../Content/main"),
+            map_name: "KOTH-Base".into(),
+            game_name: "bot weapon regression".into(),
+            password: String::new(),
+            game_type: 4,
+            max_players: 2,
+            bot_count: 0,
+            score_limit: 50,
+            win_limit: 7,
+            game_time_limit: 900.0,
+        });
+        game.map_grid = crate::map::MapGrid::fixture(32, &[]);
+        game.config.bot_count = 1;
+        for (slot, position) in [[8.0, 8.0, 0.25], [16.0, 8.0, 0.25]]
+            .into_iter()
+            .enumerate()
+        {
+            let mut p = Player::new(slot, slot as u32 + 1, "test".into());
+            p.status = PLAYER_STATUS_ALIVE;
+            p.team_id = if slot == 0 {
+                PLAYER_TEAM_BLUE
+            } else {
+                PLAYER_TEAM_RED
+            };
+            p.is_bot = slot == 0;
+            p.weapon_id = weapon_id;
+            p.cf.position = position;
+            p.cf.mouse = [16.0, 8.0, 0.25];
+            p.grenades_left = 0;
+            p.molotovs_left = 0;
+            p.elapsed_since_last_shot = 10.0;
+            game.players[slot] = Some(p);
+        }
+        game
+    }
+
+    #[test]
+    fn bazooka_bot_repeated_fire_keeps_its_in_flight_rocket() {
+        let mut game = weapon_duel(5);
+        crate::game::projectile::bot_fire_rocket(&mut game, 0, [16.0, 8.0]);
+        assert_eq!(game.projectiles.len(), 1);
+        let id = game.projectiles[0].unique_id;
+        for _ in 0..30 {
+            game.players[0].as_mut().unwrap().elapsed_since_last_shot += 1.0 / 60.0;
+            crate::game::projectile::tick_projectiles(&mut game, 1.0 / 60.0);
+            crate::game::projectile::bot_fire_rocket(&mut game, 0, [16.0, 8.0]);
+            assert!(
+                game.projectiles.iter().any(|p| p.unique_id == id),
+                "bot remotely detonated its rocket before impact"
+            );
+        }
+        assert_eq!(game.players[0].as_ref().unwrap().life, 1.0);
+        game.projectiles.clear();
+        game.players[0].as_mut().unwrap().elapsed_since_last_shot = 10.0;
+        crate::game::projectile::bot_fire_rocket(&mut game, 0, [16.0, 8.0]);
+        assert_eq!(
+            game.projectiles.len(),
+            1,
+            "bot must fire again after its rocket is gone"
+        );
+        assert_ne!(game.projectiles[0].unique_id, id);
+    }
+
+    #[test]
+    fn flamethrower_bot_closes_and_damages_a_visible_enemy() {
+        let mut game = weapon_duel(7);
+        for _ in 0..360 {
+            for p in game.players.iter_mut().flatten() {
+                p.elapsed_since_last_shot += 1.0 / 60.0;
+            }
+            tick_bots(&mut game, 1.0 / 60.0);
+            if game.players[1].as_ref().unwrap().life <= 0.5 {
+                break;
+            }
+        }
+        let bot = game.players[0].as_ref().unwrap();
+        let enemy = game.players[1].as_ref().unwrap();
+        assert!(
+            enemy.life <= 0.5,
+            "flamethrower bot failed to sustain damage: life={} position={:?} goal={:?}",
+            enemy.life,
+            bot.cf.position,
+            bot.bot_goal
+        );
+    }
+
+    #[test]
+    fn flamethrower_bot_pursues_a_retreating_enemy_into_effective_range() {
+        let mut game = weapon_duel(7);
+        let dt = 1.0 / 60.0;
+        for _ in 0..600 {
+            for p in game.players.iter_mut().flatten() {
+                p.elapsed_since_last_shot += dt;
+            }
+            let enemy = game.players[1].as_mut().unwrap();
+            enemy.cf.position[0] += dt;
+            enemy.cf.vel = [1.0, 0.0, 0.0];
+            tick_bots(&mut game, dt);
+            if game.players[1].as_ref().unwrap().life <= 0.5 {
+                break;
+            }
+        }
+        assert!(
+            game.players[1].as_ref().unwrap().life <= 0.5,
+            "flamethrower must close instead of circling outside a retreating target's range"
+        );
+    }
+
+    #[test]
+    fn weapon_flanks_leave_flame_range_margin_and_rocket_splash_clearance() {
+        let target = [16.0, 8.0, 0.25];
+        for slot in 0..12 {
+            let flame = flank_goal(slot, [8.0, 8.0, 0.25], target, 7);
+            assert!((flame[0] - target[0]).hypot(flame[1] - target[1]) < 2.0);
+            let rocket = flank_goal(slot, [8.0, 8.0, 0.25], target, 5);
+            assert!((rocket[0] - target[0]).hypot(rocket[1] - target[1]) >= 5.0);
+        }
+    }
+
+    #[test]
+    fn bazooka_bot_rejects_close_targets_walls_and_teammates() {
+        let mut game = weapon_duel(5);
+        crate::game::projectile::bot_fire_rocket(&mut game, 0, [9.0, 8.0]);
+        assert!(game.projectiles.is_empty());
+        game.map_grid = crate::map::MapGrid::fixture(32, &[(9, 8)]);
+        crate::game::projectile::bot_fire_rocket(&mut game, 0, [16.0, 8.0]);
+        assert!(game.projectiles.is_empty());
+        game.map_grid = crate::map::MapGrid::fixture(32, &[]);
+        let teammate = game.players[1].as_mut().unwrap();
+        teammate.team_id = PLAYER_TEAM_BLUE;
+        teammate.cf.position = [9.0, 8.0, 0.25];
+        crate::game::projectile::bot_fire_rocket(&mut game, 0, [16.0, 8.0]);
+        assert!(game.projectiles.is_empty());
+        game.players[1].as_mut().unwrap().cf.position[1] = 10.0;
+        crate::game::projectile::bot_fire_rocket(&mut game, 0, [16.0, 8.0]);
+        assert_eq!(
+            game.projectiles.len(),
+            1,
+            "safe teammates off the firing line should not block a shot"
+        );
+    }
 
     #[test]
     fn human_replaces_one_bot_and_keeps_six_vs_six() {
@@ -2815,8 +2972,8 @@ mod tests {
     fn flank_slots_choose_opposite_sides_without_stacking() {
         let from = [2.0, 2.0, 0.25];
         let target = [8.0, 2.0, 0.25];
-        let left = flank_goal(0, from, target);
-        let right = flank_goal(2, from, target);
+        let left = flank_goal(0, from, target, 0);
+        let right = flank_goal(2, from, target, 0);
         assert!(left[1] > target[1]);
         assert!(right[1] < target[1]);
         assert_eq!(left[0], right[0]);

@@ -420,6 +420,40 @@ pub fn bot_throw_molotov(game: &mut GameServer, shooter: usize, target: [f32; 2]
 }
 
 pub fn bot_fire_rocket(game: &mut GameServer, shooter: usize, target: [f32; 2]) {
+    // Repeated bot fire means "keep shooting", not the human's second-click
+    // remote detonation. Let the current rocket reach its target first.
+    if game
+        .projectiles
+        .iter()
+        .any(|p| p.owner == shooter && p.kind == ROCKET && p.duration > 0.0)
+    {
+        return;
+    }
+    let Some(player) = game.players.get(shooter).and_then(Option::as_ref) else {
+        return;
+    };
+    let from = player.cf.position;
+    let to = [target[0], target[1], from[2]];
+    let safe_distance = ROCKET_EXPLOSION_RADIUS + 0.5;
+    if distance(from, to) <= safe_distance {
+        return;
+    }
+    let (wall, _) = game.map_grid.ray_test(from, to);
+    if distance(from, wall) <= safe_distance {
+        return;
+    }
+    // Rockets also collide with teammates. Do not launch into a nearby body
+    // even when the intended enemy is safely beyond the splash radius.
+    if game.players.iter().enumerate().any(|(slot, p)| {
+        slot != shooter
+            && p.as_ref().is_some_and(|p| {
+                p.status == PLAYER_STATUS_ALIVE
+                    && distance(from, p.cf.position) <= safe_distance
+                    && segment_sphere_hit_t(from, to, p.cf.position, 0.5).is_some()
+            })
+    }) {
+        return;
+    }
     bot_throw(game, shooter, target, 5, ROCKET);
 }
 
