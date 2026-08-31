@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.6](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.5...v0.9.6) (2026-08-31)
+
+
+### Bug Fixes
+
+* **bots:** improve bazooka safety and flamethrower pursuit ([d555a0c](https://github.com/BaboViolent/babo-dedicated-server/commit/d555a0cfd195e6eb63606b8f5283eefff592acbb))
+* **release:** publish images compatible with Zot manifest lint ([71f7da7](https://github.com/BaboViolent/babo-dedicated-server/commit/71f7da756670add53768d956900fb631c703d9c7))
+
 ## [0.9.5](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.4...v0.9.5) (2026-08-22)
 
 
