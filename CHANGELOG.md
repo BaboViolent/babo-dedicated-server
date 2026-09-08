@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.7](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.6...v0.9.7) (2026-09-08)
+
+
+### Bug Fixes
+
+* **release:** update dependencies and use Notation signing ([4162b00](https://github.com/BaboViolent/babo-dedicated-server/commit/4162b0005b1f2fb0549d900f56534e25faf108f5))
+
 ## [0.9.6](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.5...v0.9.6) (2026-08-31)
 
 
