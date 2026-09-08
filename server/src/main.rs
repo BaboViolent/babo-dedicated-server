@@ -376,7 +376,7 @@ async fn handle_socket(game: AppState, socket: WebSocket, external_bot: bool) {
 
     let forward = tokio::spawn(async move {
         while let Some(data) = rx.recv().await {
-            if ws_tx.send(Message::Binary(data)).await.is_err() {
+            if ws_tx.send(Message::Binary(data.into())).await.is_err() {
                 break;
             }
         }

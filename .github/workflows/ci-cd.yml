@@ -77,16 +77,17 @@ jobs:
           annotations: ${{ steps.image-metadata.outputs.annotations }}
           build-args: |
             SERVER_VERSION=${{ github.ref_name }}
-      - uses: sigstore/cosign-installer@v4.1.2
       - name: Sign and verify published image
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
-        run: |
-          image="zot.standouthost.com/baboviolent/babo-dedicated-server@${{ steps.push-image.outputs.digest }}"
-          cosign sign --yes --new-bundle-format=false --use-signing-config=false --registry-referrers-mode=legacy --key env://COSIGN_PRIVATE_KEY "$image"
-          cosign verify --key env://COSIGN_PUBLIC_KEY "$image"
+        uses: Jmainguy/notation-action@v1
+        with:
+          version: 1.3.2
+          artifact: zot.standouthost.com/baboviolent/babo-dedicated-server@${{ steps.push-image.outputs.digest }}
+          key-name: standouthost-oci
+          private-key: ${{ secrets.NOTATION_PRIVATE_KEY }}
+          certificate-chain: ${{ secrets.NOTATION_CERTIFICATE_CHAIN }}
+          ca-certificate: ${{ secrets.NOTATION_CA_CERTIFICATE }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
       - name: Update Argo CD image tag
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
