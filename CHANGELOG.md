@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.8](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.7...v0.9.8) (2026-09-12)
+
+
+### Bug Fixes
+
+* **server:** use the shared Babo mascot favicon ([86778d7](https://github.com/BaboViolent/babo-dedicated-server/commit/86778d77f9bd049b7c11be4305e571aa1eaa2066))
+
 ## [0.9.7](https://github.com/BaboViolent/babo-dedicated-server/compare/v0.9.6...v0.9.7) (2026-09-08)
 
 
