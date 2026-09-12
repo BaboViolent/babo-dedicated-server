@@ -250,18 +250,12 @@ fn server_info(game: &GameServer) -> ServerInfo {
 }
 
 async fn favicon() -> impl IntoResponse {
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("image/svg+xml"),
-    );
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400"),
-    );
     (
-        headers,
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="29" fill="#101318" stroke="#fff" stroke-width="4"/><path d="M32 7v16M32 41v16M7 32h16M41 32h16" stroke="#e53935" stroke-width="7"/><circle cx="32" cy="32" r="7" fill="#2f80ed"/></svg>"##,
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        include_bytes!("babo-mascot.png").as_slice(),
     )
 }
 
